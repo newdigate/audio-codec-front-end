@@ -2,6 +2,7 @@
   "name": "audio-codec-front-end",
   "version": "0.1.0",
   "description": "Cross-platform audio browser, batch analyzer and waveform viewer",
+  "author": "Antigravity",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -9,6 +10,7 @@
     "build:native": "cmake-js compile",
     "build:native:debug": "cmake-js compile --debug",
     "test:native": "./build/tests/test_analysis_cache && node tests/native/smoke_test.js",
+    "test:e2e": "electron tests/e2e/e2e_test.js",
     "test": "vitest run"
   },
   "dependencies": {

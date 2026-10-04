@@ -44,8 +44,8 @@ export const App: React.FC = () => {
     if (!window.audioApi) return;
 
     const unsubProgress = window.audioApi.onBatchProgress((update: BatchProgressUpdate) => {
-      setFiles((prev) =>
-        prev.map((f) => {
+      setFiles((prev) => {
+        const next = prev.map((f) => {
           if (f.filePath === update.filePath) {
             return {
               ...f,
@@ -57,8 +57,18 @@ export const App: React.FC = () => {
             };
           }
           return f;
-        })
-      );
+        });
+
+        const allFinished =
+          next.length > 0 &&
+          next.every((f) => f.status === 'cached' || f.status === 'error');
+        if (allFinished) {
+          setBatchRunning(false);
+          setBatchPaused(false);
+        }
+
+        return next;
+      });
     });
 
     const unsubPlayback = window.audioApi.onPlaybackTick((state: PlaybackState) => {
@@ -85,12 +95,15 @@ export const App: React.FC = () => {
       setFiles(result.files);
       setBatchPaused(false);
 
-      const unanalyzed = result.files.filter((f) => f.status === 'unanalyzed');
+      const unanalyzed = result.files.filter(
+        (f) => f.status !== 'cached' && f.status !== 'error'
+      );
       if (unanalyzed.length > 0 && window.audioApi.startBatchAnalysis) {
         setBatchRunning(true);
         window.audioApi.startBatchAnalysis(result.folderPath, flatSidecar);
       } else {
         setBatchRunning(false);
+        setBatchPaused(false);
       }
     } catch (err) {
       console.error('Failed to select folder:', err);

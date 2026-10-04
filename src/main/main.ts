@@ -105,8 +105,11 @@ export function registerIpcHandlers() {
   ipcMain.handle('audio:start-batch', async (_event, folderPath: string, sidecarMode?: boolean) => {
     const native = getNativeAddon();
     native.startBatchAnalysis(folderPath, !!sidecarMode, (update: any) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('audio:batch-progress', update);
+      const windows = BrowserWindow.getAllWindows();
+      for (const win of windows) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('audio:batch-progress', update);
+        }
       }
     });
   });
@@ -169,12 +172,17 @@ export function registerIpcHandlers() {
 export function startPlaybackTicker() {
   if (tickerInterval) return;
   tickerInterval = setInterval(() => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const windows = BrowserWindow.getAllWindows();
+    if (windows.length === 0) return;
     try {
       const native = getNativeAddon();
       const state: PlaybackState = native.playbackGetPosition();
       if (state.isPlaying || wasPlaying || state.currentMs !== lastPlaybackState.currentMs) {
-        mainWindow.webContents.send('audio:playback-tick', state);
+        for (const win of windows) {
+          if (!win.isDestroyed()) {
+            win.webContents.send('audio:playback-tick', state);
+          }
+        }
         wasPlaying = state.isPlaying;
         lastPlaybackState = state;
       }
@@ -233,6 +241,10 @@ export function createWindow(): BrowserWindow {
 
 export function getMainWindow() {
   return mainWindow;
+}
+
+export function setMainWindow(win: BrowserWindow | null) {
+  mainWindow = win;
 }
 
 if (process.type === 'browser') {
