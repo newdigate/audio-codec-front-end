@@ -6,10 +6,12 @@
 #include <iostream>
 #include "batch_worker_pool.h"
 #include "analysis_cache.h"
+#include "playback_engine.h"
 
 namespace {
 
 audio_front_end::BatchWorkerPool g_pool;
+audio_front_end::AudioPlaybackEngine g_playbackEngine;
 
 Napi::String GetVersion(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -260,6 +262,69 @@ Napi::Value LoadFileAnalysis(const Napi::CallbackInfo& info) {
     return result;
 }
 
+Napi::Value PlaybackPlay(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::string filePath = "";
+    double startOffsetMs = 0.0;
+    if (info.Length() >= 1 && info[0].IsString()) {
+        filePath = info[0].As<Napi::String>().Utf8Value();
+    }
+    if (info.Length() >= 2 && info[1].IsNumber()) {
+        startOffsetMs = info[1].As<Napi::Number>().DoubleValue();
+    }
+    bool ok = g_playbackEngine.Play(filePath, startOffsetMs);
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value PlaybackPause(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool ok = g_playbackEngine.Pause();
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value PlaybackResume(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool ok = g_playbackEngine.Resume();
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value PlaybackStop(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    bool ok = g_playbackEngine.Stop();
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value PlaybackSeek(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Number expected for offsetMs").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    double offsetMs = info[0].As<Napi::Number>().DoubleValue();
+    bool ok = g_playbackEngine.Seek(offsetMs);
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value PlaybackGetPosition(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    auto pos = g_playbackEngine.GetPosition();
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("isPlaying", Napi::Boolean::New(env, pos.isPlaying));
+    obj.Set("currentMs", Napi::Number::New(env, pos.currentMs));
+    return obj;
+}
+
+Napi::Value PlaybackSetVolume(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Number expected for volume").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    double vol = info[0].As<Napi::Number>().DoubleValue();
+    g_playbackEngine.SetVolume(vol);
+    return env.Undefined();
+}
+
 } // anonymous namespace
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -268,6 +333,15 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("startBatchAnalysis", Napi::Function::New(env, StartBatchAnalysis));
     exports.Set("controlBatchAnalysis", Napi::Function::New(env, ControlBatchAnalysis));
     exports.Set("loadFileAnalysis", Napi::Function::New(env, LoadFileAnalysis));
+
+    exports.Set("playbackPlay", Napi::Function::New(env, PlaybackPlay));
+    exports.Set("playbackPause", Napi::Function::New(env, PlaybackPause));
+    exports.Set("playbackResume", Napi::Function::New(env, PlaybackResume));
+    exports.Set("playbackStop", Napi::Function::New(env, PlaybackStop));
+    exports.Set("playbackSeek", Napi::Function::New(env, PlaybackSeek));
+    exports.Set("playbackGetPosition", Napi::Function::New(env, PlaybackGetPosition));
+    exports.Set("playbackSetVolume", Napi::Function::New(env, PlaybackSetVolume));
+
     return exports;
 }
 

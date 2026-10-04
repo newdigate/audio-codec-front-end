@@ -43,7 +43,7 @@ include_directories(
     ${AUDIO_CODECS_ROOT_DIR}
 )
 
-file(GLOB_RECURSE SOURCE_FILES "src/native/*.cpp")
+file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "src/native/*.cpp")
 
 add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC})
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
