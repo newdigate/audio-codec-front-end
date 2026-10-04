@@ -43,6 +43,13 @@ void test_basic_cache_workflow() {
     assert(data.sampleRate == 44100);
     assert(data.bpm == 120.0);
 
+    // 5. Test lightweight header-only reader
+    uint32_t headerDurationMs = 0;
+    double headerBpm = 0.0;
+    assert(cache.ReadCacheHeader(sampleAudio.string(), headerDurationMs, headerBpm, false));
+    assert(headerDurationMs == 1000);
+    assert(headerBpm == 120.0);
+
     fs::remove_all(tempDir);
     std::cout << "test_basic_cache_workflow PASSED" << std::endl;
 }
@@ -125,6 +132,12 @@ void test_flat_sidecar_and_invalidation() {
     assert(data.confidence == 95);
     assert(data.timeSignature.first == 3);
     assert(data.timeSignature.second == 4);
+
+    uint32_t headerDurationMs = 0;
+    double headerBpm = 0.0;
+    assert(cache.ReadCacheHeader(sampleAudio.string(), headerDurationMs, headerBpm, true));
+    assert(headerDurationMs == 2500);
+    assert(std::abs(headerBpm - 128.5) < 0.01);
 
     // Verify LODs
     assert(data.lods.size() == 2);

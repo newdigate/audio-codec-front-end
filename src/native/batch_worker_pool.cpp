@@ -1,221 +1,16 @@
 #include "batch_worker_pool.h"
-#include <audio_codecs/wav/wav_decoder.h>
-#include <audio_codecs/aiff/aiff_decoder.h>
-#include <audio_codecs/mp3/mp3_decoder.h>
-#include <audio_codecs/flac/flac_decoder.h>
-#include <audio_codecs/vorbis/vorbis_decoder.h>
-#include <audio_codecs/aac/aac_decoder.h>
+#include "chunk_decoder.h"
 #include <audio_codecs/preview/preview_generator.h>
-#include <audio_codecs/preview/preview_stream.h>
 #include <audio_codecs/spectrum/spectrum_generator.h>
 #include <audio_codecs/spectrum/desktop_fft.h>
 #include <audio_codecs/tempo/tempo_generator.h>
 
-#include <fstream>
 #include <cmath>
 #include <algorithm>
-#include <iostream>
 #include <filesystem>
 #include <cstring>
 
 namespace audio_front_end {
-
-namespace {
-
-size_t SkipId3(const uint8_t* data, size_t size) {
-    if (size >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
-        size_t tag_size = ((data[6] & 0x7F) << 21) |
-                          ((data[7] & 0x7F) << 14) |
-                          ((data[8] & 0x7F) << 7)  |
-                          (data[9] & 0x7F);
-        size_t total_id3_len = 10 + tag_size;
-        if (data[5] & 0x10) { // footer present
-            total_id3_len += 10;
-        }
-        return (total_id3_len < size) ? total_id3_len : size;
-    }
-    return 0;
-}
-
-bool DecodeWav(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::wav::WavDecoder>();
-    size_t consumed = 0;
-    if (!decoder->parse_stream_header(data, size, consumed)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    outChannels = decoder->get_channels();
-    if (outSampleRate == 0 || outChannels == 0 || outChannels > 2) return false;
-
-    size_t offset = consumed;
-    std::vector<int16_t> chunk(4096);
-    while (offset < size) {
-        int samples = decoder->decode_frame_i16(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        size_t lastFrameBytes = decoder->get_last_frame_bytes();
-        if (lastFrameBytes == 0) break;
-        offset += lastFrameBytes;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeAiff(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::aiff::AiffDecoder>();
-    size_t consumed = 0;
-    if (!decoder->parse_stream_header(data, size, consumed)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    outChannels = decoder->get_channels();
-    if (outSampleRate == 0 || outChannels == 0 || outChannels > 2) return false;
-
-    size_t offset = consumed;
-    std::vector<int16_t> chunk(4096);
-    while (offset < size) {
-        int samples = decoder->decode_frame_i16(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        size_t lastFrameBytes = decoder->get_last_frame_bytes();
-        if (lastFrameBytes == 0) break;
-        offset += lastFrameBytes;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeMp3(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::mp3::Mp3Decoder>();
-    audio_codecs::AudioConfig dummy_config{44100, 2, 128, false, 4};
-    if (!decoder->init(dummy_config)) return false;
-
-    size_t offset = SkipId3(data, size);
-    std::vector<float> floatChunk(4608);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-    uint32_t bitrate_kbps = 0;
-
-    while (offset + 4 <= size) {
-        int samples = decoder->decode_frame(data + offset, size - offset, floatChunk.data(), floatChunk.size());
-        if (samples <= 0) break;
-        if (sampleRate == 0) {
-            decoder->get_frame_info(sampleRate, channels, bitrate_kbps);
-        }
-        for (int i = 0; i < samples; ++i) {
-            int32_t s = static_cast<int32_t>(floatChunk[i] * 32767.0f);
-            outPcm.push_back(static_cast<int16_t>(std::clamp(s, -32768, 32767)));
-        }
-        size_t advance = decoder->get_last_sync_offset() + decoder->get_last_frame_bytes();
-        if (advance == 0) advance = 4;
-        offset += advance;
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    outChannels = (channels > 0 && channels <= 2) ? channels : 2;
-    return !outPcm.empty();
-}
-
-bool DecodeFlac(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::flac::FlacDecoder>();
-    size_t header_len = 0;
-    if (!decoder->parse_stream_header(data, size, header_len)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    outChannels = decoder->get_channels();
-    if (outSampleRate == 0 || outChannels == 0 || outChannels > 2) return false;
-
-    size_t offset = header_len;
-    std::vector<int16_t> chunk(8192);
-    while (offset + 4 <= size) {
-        int samples = decoder->decode_frame_i16(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        size_t advance = decoder->get_last_frame_bytes();
-        if (advance == 0) advance = 4;
-        offset += advance;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeOgg(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::vorbis::VorbisDecoder>();
-    std::vector<float> floatChunk(4096);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-
-    for (size_t i = 0; i < size; i += 512) {
-        size_t bytes = std::min<size_t>(512, size - i);
-        int samples = decoder->decode_frame(data + i, bytes, floatChunk.data(), floatChunk.size());
-        if (samples > 0) {
-            if (sampleRate == 0 && decoder->has_headers()) {
-                sampleRate = decoder->get_info().sample_rate;
-                channels = decoder->get_info().channels;
-            }
-            for (int s = 0; s < samples; ++s) {
-                int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
-                outPcm.push_back(static_cast<int16_t>(std::clamp(val, -32768, 32767)));
-            }
-        }
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    outChannels = (channels > 0 && channels <= 2) ? channels : 2;
-    return !outPcm.empty();
-}
-
-bool DecodeAac(const uint8_t* data, size_t size, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    auto decoder = std::make_unique<audio_codecs::aac::AacDecoder>();
-    audio_codecs::AudioConfig config{44100, 2, 0, false, 0};
-    if (!decoder->init(config)) return false;
-
-    size_t offset = 0;
-    std::vector<float> floatChunk(2048);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-    uint32_t bitrate_kbps = 0;
-
-    while (offset < size) {
-        int samples = decoder->decode_frame(data + offset, size - offset, floatChunk.data(), floatChunk.size());
-        if (samples <= 0) break;
-        if (sampleRate == 0) {
-            decoder->get_frame_info(sampleRate, channels, bitrate_kbps);
-        }
-        for (int s = 0; s < samples; ++s) {
-            int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
-            outPcm.push_back(static_cast<int16_t>(std::clamp(val, -32768, 32767)));
-        }
-        size_t frame_bytes = decoder->get_last_frame_bytes();
-        if (frame_bytes == 0) break;
-        offset += frame_bytes + decoder->get_last_sync_offset();
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    outChannels = (channels > 0 && channels <= 2) ? channels : 2;
-    return !outPcm.empty();
-}
-
-bool DecodeAudioFile(const std::string& filePath, std::vector<int16_t>& outPcm, uint32_t& outSampleRate, uint8_t& outChannels) {
-    namespace fs = std::filesystem;
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) return false;
-    std::streamsize fileSize = file.tellg();
-    if (fileSize <= 0) return false;
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> buffer(fileSize);
-    if (!file.read(reinterpret_cast<char*>(buffer.data()), fileSize)) return false;
-
-    std::string ext = fs::path(filePath).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-    if (ext == ".wav" || ext == ".wave") {
-        return DecodeWav(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    } else if (ext == ".aiff" || ext == ".aif") {
-        return DecodeAiff(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    } else if (ext == ".mp3") {
-        return DecodeMp3(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    } else if (ext == ".flac") {
-        return DecodeFlac(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    } else if (ext == ".ogg" || ext == ".oga") {
-        return DecodeOgg(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    } else if (ext == ".aac" || ext == ".m4a") {
-        return DecodeAac(buffer.data(), buffer.size(), outPcm, outSampleRate, outChannels);
-    }
-    return false;
-}
-
-} // anonymous namespace
 
 BatchWorkerPool::BatchWorkerPool() = default;
 
@@ -337,14 +132,15 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
 
     // 1. If already cached, notify immediately and skip reprocessing
     if (cache_.HasValidCache(filePath, flatSidecar)) {
-        CachedAnalysisData cachedData;
-        if (cache_.ReadCache(filePath, cachedData, flatSidecar)) {
+        uint32_t durationMs = 0;
+        double bpm = 0.0;
+        if (cache_.ReadCacheHeader(filePath, durationMs, bpm, flatSidecar)) {
             NotifyProgress(ProgressUpdate{
                 filePath,
                 100.0,
-                cachedData.bpm,
+                bpm,
                 "cached",
-                cachedData.durationMs
+                durationMs
             });
             return;
         }
@@ -361,11 +157,9 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
 
     if (stop_) return;
 
-    // 3. Decode audio file
-    std::vector<int16_t> pcmSamples;
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-    if (!DecodeAudioFile(filePath, pcmSamples, sampleRate, channels) || pcmSamples.empty() || channels == 0) {
+    // 3. Open streaming decoder
+    ChunkAudioDecoder decoder;
+    if (!decoder.Open(filePath)) {
         NotifyProgress(ProgressUpdate{
             filePath,
             0.0,
@@ -375,25 +169,32 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
         });
         return;
     }
-    std::cout << "[pool] Decoded " << pcmSamples.size() << " samples, rate=" << sampleRate << ", ch=" << static_cast<int>(channels) << std::endl;
+
+    uint32_t sampleRate = decoder.GetSampleRate();
+    uint8_t channels = decoder.GetChannels();
+    if (sampleRate == 0 || channels == 0 || channels > 2) {
+        NotifyProgress(ProgressUpdate{
+            filePath,
+            0.0,
+            0.0,
+            "error",
+            0
+        });
+        return;
+    }
 
     if (stop_) return;
 
-    uint64_t totalFrames = pcmSamples.size() / channels;
-    uint32_t durationMs = (sampleRate > 0) ? static_cast<uint32_t>((totalFrames * 1000ULL) / sampleRate) : 0;
+    // 4. Stream-decode incrementally into PreviewGenerator
+    StreamingAudioPcmReader streamingReader(decoder);
 
-    // 4. Generate Audio Preview (.apv)
-    audio_codecs::preview::MemoryReader pcmReader(
-        reinterpret_cast<const uint8_t*>(pcmSamples.data()),
-        pcmSamples.size() * sizeof(int16_t)
-    );
-
-    size_t apvCapacity = std::max<size_t>(65536, 1024 + (totalFrames / 128 + 64) * 4 * 2);
+    uint64_t estFrames = decoder.GetTotalFrames();
+    size_t apvCapacity = std::max<size_t>(65536, 1024 + (estFrames / 128 + 64) * 4 * 2);
     std::vector<uint8_t> apvStorage(apvCapacity, 0);
     audio_codecs::preview::MemoryWriter apvWriter(apvStorage.data(), apvStorage.size());
 
     auto previewGen = std::make_unique<audio_codecs::preview::PreviewGenerator>();
-    bool initPreview = previewGen->init(pcmReader, apvWriter, nullptr, sampleRate, channels, channels > 1);
+    bool initPreview = previewGen->init(streamingReader, apvWriter, nullptr, sampleRate, channels, channels > 1);
     if (!initPreview || !previewGen->generate_all()) {
         NotifyProgress(ProgressUpdate{ filePath, 0.0, 0.0, "error", 0 });
         return;
@@ -402,6 +203,9 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
     if (stop_) return;
 
     audio_codecs::preview::ApvHeader apvHeader = previewGen->header();
+    uint64_t totalFrames = apvHeader.total_pcm_frames;
+    uint32_t durationMs = apvHeader.duration_ms;
+
     std::vector<std::vector<int8_t>> lodData(apvHeader.lod_count);
     for (size_t i = 0; i < apvHeader.lod_count; ++i) {
         uint64_t offset = apvHeader.lods[i].file_offset;
@@ -412,7 +216,9 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
         }
     }
 
-    // 5. Generate Spectrum (.asv) and Tempo (.att)
+    // 5. Stream-decode incrementally into Spectrum (.asv) and Tempo (.att)
+    streamingReader.seek(0);
+
     size_t asvCapacity = std::max<size_t>(65536, 1024 + (totalFrames / 512 + 64) * 64 * 2);
     std::vector<uint8_t> asvStorage(asvCapacity, 0);
     audio_codecs::preview::MemoryWriter asvWriter(asvStorage.data(), asvStorage.size());
@@ -421,8 +227,7 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
     auto fftBackend = std::make_unique<audio_codecs::spectrum::DesktopRealFftBackend>();
     fftBackend->init();
 
-    pcmReader.seek(0);
-    bool initAsv = spectrumGen->init(pcmReader, asvWriter, *fftBackend, sampleRate, channels, true, 64);
+    bool initAsv = spectrumGen->init(streamingReader, asvWriter, *fftBackend, sampleRate, channels, true, 64);
     if (initAsv) {
         spectrumGen->generate_all();
     }

@@ -102,14 +102,12 @@ export function registerIpcHandlers() {
     return rawFiles.map(normalizeAudioFileInfo);
   });
 
-  ipcMain.handle('audio:start-batch', async (_event, folderPath: string, sidecarMode?: boolean) => {
+  ipcMain.handle('audio:start-batch', async (event, folderPath: string, sidecarMode?: boolean) => {
     const native = getNativeAddon();
+    const sender = event.sender;
     native.startBatchAnalysis(folderPath, !!sidecarMode, (update: any) => {
-      const windows = BrowserWindow.getAllWindows();
-      for (const win of windows) {
-        if (!win.isDestroyed()) {
-          win.webContents.send('audio:batch-progress', update);
-        }
+      if (!sender.isDestroyed()) {
+        sender.send('audio:batch-progress', update);
       }
     });
   });
@@ -217,7 +215,7 @@ export function createWindow(): BrowserWindow {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 

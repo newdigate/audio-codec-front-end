@@ -1,214 +1,10 @@
 #include "playback_engine.h"
-#include <audio_codecs/wav/wav_decoder.h>
-#include <audio_codecs/aiff/aiff_decoder.h>
-#include <audio_codecs/mp3/mp3_decoder.h>
-#include <audio_codecs/flac/flac_decoder.h>
-#include <audio_codecs/vorbis/vorbis_decoder.h>
-#include <audio_codecs/aac/aac_decoder.h>
-
-#include <fstream>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
 #include <cstring>
-#include <iostream>
 
 namespace audio_front_end {
-
-namespace {
-
-size_t SkipId3(const uint8_t* data, size_t size) {
-    if (size >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
-        size_t tag_size = ((data[6] & 0x7F) << 21) |
-                          ((data[7] & 0x7F) << 14) |
-                          ((data[8] & 0x7F) << 7)  |
-                          (data[9] & 0x7F);
-        size_t total_id3_len = 10 + tag_size;
-        if (data[5] & 0x10) total_id3_len += 10;
-        return (total_id3_len < size) ? total_id3_len : size;
-    }
-    return 0;
-}
-
-bool DecodeWav(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::wav::WavDecoder>();
-    size_t consumed = 0;
-    if (!decoder->parse_stream_header(data, size, consumed)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    uint8_t ch = decoder->get_channels();
-    if (outSampleRate == 0 || ch == 0 || ch > 2) return false;
-
-    size_t offset = consumed;
-    std::vector<float> chunk(4096);
-    while (offset < size) {
-        int samples = decoder->decode_frame_f32(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        if (ch == 1) {
-            for (int i = 0; i < samples; ++i) {
-                outPcm.push_back(chunk[i]);
-                outPcm.push_back(chunk[i]);
-            }
-        } else {
-            outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        }
-        size_t lastFrameBytes = decoder->get_last_frame_bytes();
-        if (lastFrameBytes == 0) break;
-        offset += lastFrameBytes;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeAiff(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::aiff::AiffDecoder>();
-    size_t consumed = 0;
-    if (!decoder->parse_stream_header(data, size, consumed)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    uint8_t ch = decoder->get_channels();
-    if (outSampleRate == 0 || ch == 0 || ch > 2) return false;
-
-    size_t offset = consumed;
-    std::vector<float> chunk(4096);
-    while (offset < size) {
-        int samples = decoder->decode_frame_f32(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        if (ch == 1) {
-            for (int i = 0; i < samples; ++i) {
-                outPcm.push_back(chunk[i]);
-                outPcm.push_back(chunk[i]);
-            }
-        } else {
-            outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        }
-        size_t lastFrameBytes = decoder->get_last_frame_bytes();
-        if (lastFrameBytes == 0) break;
-        offset += lastFrameBytes;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeMp3(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::mp3::Mp3Decoder>();
-    audio_codecs::AudioConfig dummy_config{44100, 2, 128, false, 4};
-    if (!decoder->init(dummy_config)) return false;
-
-    size_t offset = SkipId3(data, size);
-    std::vector<float> floatChunk(4608);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-    uint32_t bitrate_kbps = 0;
-
-    while (offset + 4 <= size) {
-        int samples = decoder->decode_frame(data + offset, size - offset, floatChunk.data(), floatChunk.size());
-        if (samples <= 0) break;
-        if (sampleRate == 0) {
-            decoder->get_frame_info(sampleRate, channels, bitrate_kbps);
-        }
-        if (channels == 1) {
-            for (int i = 0; i < samples; ++i) {
-                outPcm.push_back(floatChunk[i]);
-                outPcm.push_back(floatChunk[i]);
-            }
-        } else {
-            outPcm.insert(outPcm.end(), floatChunk.begin(), floatChunk.begin() + samples);
-        }
-        size_t advance = decoder->get_last_sync_offset() + decoder->get_last_frame_bytes();
-        if (advance == 0) advance = 4;
-        offset += advance;
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    return !outPcm.empty();
-}
-
-bool DecodeFlac(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::flac::FlacDecoder>();
-    size_t header_len = 0;
-    if (!decoder->parse_stream_header(data, size, header_len)) return false;
-    outSampleRate = decoder->get_sample_rate();
-    uint8_t ch = decoder->get_channels();
-    if (outSampleRate == 0 || ch == 0 || ch > 2) return false;
-
-    size_t offset = header_len;
-    std::vector<float> chunk(8192);
-    while (offset + 4 <= size) {
-        int samples = decoder->decode_frame(data + offset, size - offset, chunk.data(), chunk.size());
-        if (samples <= 0) break;
-        if (ch == 1) {
-            for (int i = 0; i < samples; ++i) {
-                outPcm.push_back(chunk[i]);
-                outPcm.push_back(chunk[i]);
-            }
-        } else {
-            outPcm.insert(outPcm.end(), chunk.begin(), chunk.begin() + samples);
-        }
-        size_t advance = decoder->get_last_frame_bytes();
-        if (advance == 0) advance = 4;
-        offset += advance;
-    }
-    return !outPcm.empty();
-}
-
-bool DecodeOgg(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::vorbis::VorbisDecoder>();
-    std::vector<float> floatChunk(4096);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-
-    for (size_t i = 0; i < size; i += 512) {
-        size_t bytes = std::min<size_t>(512, size - i);
-        int samples = decoder->decode_frame(data + i, bytes, floatChunk.data(), floatChunk.size());
-        if (samples > 0) {
-            if (sampleRate == 0 && decoder->has_headers()) {
-                sampleRate = decoder->get_info().sample_rate;
-                channels = decoder->get_info().channels;
-            }
-            if (channels == 1) {
-                for (int s = 0; s < samples; ++s) {
-                    outPcm.push_back(floatChunk[s]);
-                    outPcm.push_back(floatChunk[s]);
-                }
-            } else {
-                outPcm.insert(outPcm.end(), floatChunk.begin(), floatChunk.begin() + samples);
-            }
-        }
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    return !outPcm.empty();
-}
-
-bool DecodeAac(const uint8_t* data, size_t size, std::vector<float>& outPcm, uint32_t& outSampleRate) {
-    auto decoder = std::make_unique<audio_codecs::aac::AacDecoder>();
-    audio_codecs::AudioConfig config{44100, 2, 0, false, 0};
-    if (!decoder->init(config)) return false;
-
-    size_t offset = 0;
-    std::vector<float> floatChunk(2048);
-    uint32_t sampleRate = 0;
-    uint8_t channels = 0;
-    uint32_t bitrate_kbps = 0;
-
-    while (offset < size) {
-        int samples = decoder->decode_frame(data + offset, size - offset, floatChunk.data(), floatChunk.size());
-        if (samples <= 0) break;
-        if (sampleRate == 0) {
-            decoder->get_frame_info(sampleRate, channels, bitrate_kbps);
-        }
-        if (channels == 1) {
-            for (int s = 0; s < samples; ++s) {
-                outPcm.push_back(floatChunk[s]);
-                outPcm.push_back(floatChunk[s]);
-            }
-        } else {
-            outPcm.insert(outPcm.end(), floatChunk.begin(), floatChunk.begin() + samples);
-        }
-        size_t frame_bytes = decoder->get_last_frame_bytes();
-        if (frame_bytes == 0) break;
-        offset += frame_bytes + decoder->get_last_sync_offset();
-    }
-    outSampleRate = (sampleRate > 0) ? sampleRate : 44100;
-    return !outPcm.empty();
-}
-
-} // anonymous namespace
 
 AudioPlaybackEngine::AudioPlaybackEngine() {
     if (EnsureSoundIo()) {
@@ -430,8 +226,12 @@ void AudioPlaybackEngine::StopDecoder() {
 }
 
 void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
-    int64_t total = static_cast<int64_t>(decodedPcm_.size() / 2);
-    targetFrame = std::clamp<int64_t>(targetFrame, 0, total);
+    int64_t total = totalFrames_.load(std::memory_order_relaxed);
+    if (total > 0) {
+        targetFrame = std::clamp<int64_t>(targetFrame, 0, total);
+    } else if (targetFrame < 0) {
+        targetFrame = 0;
+    }
 
     // Flush existing ring buffer contents safely
     if (isActivelyStreaming_.load(std::memory_order_relaxed)) {
@@ -448,17 +248,19 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
         ringBuffer_.clear();
     }
 
-    decodeReadHead_ = targetFrame;
+    streamDecoder_.SeekFrame(targetFrame);
+    currentDecodedFrame_ = targetFrame;
     currentFrame_.store(targetFrame, std::memory_order_release);
 
     // Pre-fill ring buffer from new position (only this decoder thread writes to ring buffer)
-    if (targetFrame < total) {
-        size_t availFrames = static_cast<size_t>(total - targetFrame);
-        size_t framesToWrite = std::min<size_t>(availFrames, ringBuffer_.availableWrite() / 2);
-        framesToWrite = std::min<size_t>(framesToWrite, 16384);
-        if (framesToWrite > 0) {
-            ringBuffer_.write(&decodedPcm_[targetFrame * 2], framesToWrite * 2);
-            decodeReadHead_ = targetFrame + framesToWrite;
+    size_t availWrite = ringBuffer_.availableWrite();
+    size_t framesToFill = std::min<size_t>(availWrite / 2, 8192);
+    if (framesToFill > 0) {
+        float stackBuf[16384];
+        size_t decoded = streamDecoder_.DecodeChunkF32Stereo(stackBuf, framesToFill);
+        if (decoded > 0) {
+            ringBuffer_.write(stackBuf, decoded * 2);
+            currentDecodedFrame_ = targetFrame + static_cast<int64_t>(decoded);
         }
     }
 }
@@ -476,8 +278,8 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
             }
 
             if (cmd.type == DecoderCommandType::LoadAndPlay) {
-                if (!cmd.filePath.empty() && (cmd.filePath != currentFilePath_ || decodedPcm_.empty())) {
-                    bool ok = LoadAndDecodeTrack(cmd.filePath);
+                if (!cmd.filePath.empty() && (cmd.filePath != currentFilePath_ || !streamDecoder_.IsOpen())) {
+                    bool ok = LoadTrack(cmd.filePath);
                     if (!ok) {
                         isPlaying_.store(false, std::memory_order_release);
                         continue;
@@ -515,7 +317,8 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
                 isPlaying_.store(false, std::memory_order_release);
                 isPaused_.store(false, std::memory_order_release);
                 currentFrame_.store(0, std::memory_order_release);
-                decodeReadHead_ = 0;
+                currentDecodedFrame_ = 0;
+                streamDecoder_.SeekFrame(0);
                 ringBuffer_.clear();
                 std::lock_guard<std::mutex> streamLock(streamMutex_);
                 if (outstream_) {
@@ -533,19 +336,18 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
         bool playing = isPlaying_.load(std::memory_order_acquire);
         bool paused = isPaused_.load(std::memory_order_acquire);
 
-        // Streaming PCM floats into ring buffer ahead of playhead
+        // Streaming PCM floats on-demand into ring buffer ahead of playhead
         if (playing && !paused) {
             size_t availWrite = ringBuffer_.availableWrite();
             if (availWrite >= 2048) {
-                int64_t total = static_cast<int64_t>(decodedPcm_.size() / 2);
-                if (decodeReadHead_ < total) {
-                    size_t availFrames = static_cast<size_t>(total - decodeReadHead_);
-                    size_t framesToWrite = std::min<size_t>(availFrames, availWrite / 2);
-                    framesToWrite = std::min<size_t>(framesToWrite, 4096);
-                    if (framesToWrite > 0) {
-                        ringBuffer_.write(&decodedPcm_[decodeReadHead_ * 2], framesToWrite * 2);
-                        decodeReadHead_ += framesToWrite;
-                    }
+                size_t framesToDecode = std::min<size_t>(availWrite / 2, 4096);
+                float stackBuf[8192];
+                size_t decoded = streamDecoder_.DecodeChunkF32Stereo(stackBuf, framesToDecode);
+                if (decoded > 0) {
+                    ringBuffer_.write(stackBuf, decoded * 2);
+                    currentDecodedFrame_ += static_cast<int64_t>(decoded);
+                } else {
+                    totalFrames_.store(currentDecodedFrame_, std::memory_order_release);
                 }
             }
         }
@@ -561,44 +363,14 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
     }
 }
 
-bool AudioPlaybackEngine::LoadAndDecodeTrack(const std::string& filePath) {
-    namespace fs = std::filesystem;
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) return false;
-    std::streamsize fileSize = file.tellg();
-    if (fileSize <= 0) return false;
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> buffer(fileSize);
-    if (!file.read(reinterpret_cast<char*>(buffer.data()), fileSize)) return false;
-
-    std::string ext = fs::path(filePath).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-    std::vector<float> tempPcm;
-    uint32_t rate = 44100;
-    bool ok = false;
-
-    if (ext == ".wav" || ext == ".wave") {
-        ok = DecodeWav(buffer.data(), buffer.size(), tempPcm, rate);
-    } else if (ext == ".aiff" || ext == ".aif") {
-        ok = DecodeAiff(buffer.data(), buffer.size(), tempPcm, rate);
-    } else if (ext == ".mp3") {
-        ok = DecodeMp3(buffer.data(), buffer.size(), tempPcm, rate);
-    } else if (ext == ".flac") {
-        ok = DecodeFlac(buffer.data(), buffer.size(), tempPcm, rate);
-    } else if (ext == ".ogg" || ext == ".oga") {
-        ok = DecodeOgg(buffer.data(), buffer.size(), tempPcm, rate);
-    } else if (ext == ".aac" || ext == ".m4a") {
-        ok = DecodeAac(buffer.data(), buffer.size(), tempPcm, rate);
-    }
-
-    if (!ok || tempPcm.empty()) return false;
-
+bool AudioPlaybackEngine::LoadTrack(const std::string& filePath) {
+    if (!streamDecoder_.Open(filePath)) return false;
     currentFilePath_ = filePath;
-    decodedPcm_ = std::move(tempPcm);
+    uint32_t rate = streamDecoder_.GetSampleRate();
+    if (rate == 0) rate = 44100;
     sampleRate_.store(rate, std::memory_order_release);
-    totalFrames_.store(decodedPcm_.size() / 2, std::memory_order_release);
+    totalFrames_.store(static_cast<int64_t>(streamDecoder_.GetTotalFrames()), std::memory_order_release);
+    currentDecodedFrame_ = 0;
     return true;
 }
 
@@ -701,7 +473,6 @@ bool AudioPlaybackEngine::Seek(double offsetMs) {
 void AudioPlaybackEngine::SetVolume(double volume) {
     float vol = static_cast<float>(std::clamp(volume, 0.0, 1.0));
     volume_.store(vol, std::memory_order_relaxed);
-    // Note: purely software volume in HandleAudioWrite to avoid double attenuation with hardware stream volume
 }
 
 PlaybackPosition AudioPlaybackEngine::GetPosition() const {

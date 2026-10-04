@@ -228,6 +228,44 @@ bool AnalysisCache::ReadCache(const std::string& audioPath, CachedAnalysisData& 
     return true;
 }
 
+bool AnalysisCache::ReadCacheHeader(const std::string& audioPath, uint32_t& durationMs, double& bpm, bool flatSidecar) {
+    namespace fs = std::filesystem;
+    fs::path apvPath, attPath;
+    if (!FindAnalysisPaths(audioPath, flatSidecar, apvPath, attPath)) {
+        return false;
+    }
+
+    audio_codecs::preview::ApvHeader apvHdr{};
+    {
+        std::ifstream apvFile(apvPath, std::ios::binary);
+        if (!apvFile.is_open()) return false;
+        if (!apvFile.read(reinterpret_cast<char*>(&apvHdr), sizeof(apvHdr))) {
+            return false;
+        }
+        if (apvHdr.magic != audio_codecs::preview::APV_MAGIC ||
+            apvHdr.version != audio_codecs::preview::APV_VERSION) {
+            return false;
+        }
+    }
+
+    audio_codecs::tempo::AttHeader attHdr{};
+    {
+        std::ifstream attFile(attPath, std::ios::binary);
+        if (!attFile.is_open()) return false;
+        if (!attFile.read(reinterpret_cast<char*>(&attHdr), sizeof(attHdr))) {
+            return false;
+        }
+        if (std::memcmp(attHdr.magic, audio_codecs::tempo::ATT_MAGIC, 4) != 0 ||
+            attHdr.version != audio_codecs::tempo::ATT_VERSION) {
+            return false;
+        }
+    }
+
+    durationMs = apvHdr.duration_ms ? apvHdr.duration_ms : attHdr.duration_ms;
+    bpm = static_cast<double>(attHdr.global_bpm_q16) / 65536.0;
+    return true;
+}
+
 bool AnalysisCache::WriteCache(const std::string& audioPath, 
                                const audio_codecs::preview::ApvHeader& apvHeader,
                                const std::vector<std::vector<int8_t>>& lodData,

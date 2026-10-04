@@ -39,6 +39,14 @@ export const App: React.FC = () => {
     );
   }, [folderName]);
 
+  // Reset batchRunning when all files are cached or finished
+  useEffect(() => {
+    if (files.length > 0 && files.every((f) => f.status === 'cached' || f.status === 'error')) {
+      setBatchRunning(false);
+      setBatchPaused(false);
+    }
+  }, [files]);
+
   // Subscribe to batch progress and playback tick
   useEffect(() => {
     if (!window.audioApi) return;

@@ -66,18 +66,10 @@ Napi::Value ScanFolder(const Napi::CallbackInfo& info) {
 
                 if (cache.HasValidCache(filePath, false)) {
                     status = "cached";
-                    audio_front_end::CachedAnalysisData data;
-                    if (cache.ReadCache(filePath, data, false)) {
-                        durationMs = data.durationMs;
-                        bpm = data.bpm;
-                    }
+                    cache.ReadCacheHeader(filePath, durationMs, bpm, false);
                 } else if (cache.HasValidCache(filePath, true)) {
                     status = "cached";
-                    audio_front_end::CachedAnalysisData data;
-                    if (cache.ReadCache(filePath, data, true)) {
-                        durationMs = data.durationMs;
-                        bpm = data.bpm;
-                    }
+                    cache.ReadCacheHeader(filePath, durationMs, bpm, true);
                 }
 
                 Napi::Object fileObj = Napi::Object::New(env);

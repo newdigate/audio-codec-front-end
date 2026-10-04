@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <soundio/soundio.h>
 #include "ring_buffer.h"
+#include "chunk_decoder.h"
 
 namespace audio_front_end {
 
@@ -63,7 +64,7 @@ private:
     void DecoderThreadLoop();
     void StopDecoder();
 
-    bool LoadAndDecodeTrack(const std::string& filePath);
+    bool LoadTrack(const std::string& filePath);
     void ExecuteSeek(int64_t targetFrame);
 
     // libsoundio objects - manipulated exclusively on decoderThread_ with streamMutex_
@@ -96,10 +97,10 @@ private:
     std::atomic<bool> flushRequested_{false};
     std::atomic<bool> flushAck_{false};
 
-    // Decoded audio cache (accessed and mutated EXCLUSIVELY by decoderThread_)
+    // Streaming decoder state (accessed and mutated EXCLUSIVELY by decoderThread_)
     std::string currentFilePath_;
-    std::vector<float> decodedPcm_; // stereo interleaved floats
-    int64_t decodeReadHead_{0};
+    ChunkAudioDecoder streamDecoder_;
+    int64_t currentDecodedFrame_{0};
 };
 
 } // namespace audio_front_end

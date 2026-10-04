@@ -41,6 +41,7 @@ public:
     
     bool HasValidCache(const std::string& audioPath, bool flatSidecar);
     bool ReadCache(const std::string& audioPath, CachedAnalysisData& outData, bool flatSidecar);
+    bool ReadCacheHeader(const std::string& audioPath, uint32_t& durationMs, double& bpm, bool flatSidecar);
     bool WriteCache(const std::string& audioPath, 
                     const audio_codecs::preview::ApvHeader& apvHeader,
                     const std::vector<std::vector<int8_t>>& lodData,
