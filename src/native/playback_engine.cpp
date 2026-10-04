@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <cstring>
+#include <iostream>
 
 namespace audio_front_end {
 
@@ -257,11 +258,15 @@ void AudioPlaybackEngine::CleanupSoundIo() {
 }
 
 bool AudioPlaybackEngine::OpenStream(int sampleRate) {
+    std::lock_guard<std::mutex> streamLock(streamMutex_);
     if (outstream_) {
         if (outstream_->sample_rate == sampleRate) {
             return true;
         }
-        CloseStream();
+        soundio_outstream_pause(outstream_, true);
+        soundio_outstream_destroy(outstream_);
+        outstream_ = nullptr;
+        isActivelyStreaming_.store(false, std::memory_order_release);
     }
     if (!EnsureSoundIo()) return false;
 
@@ -297,6 +302,7 @@ bool AudioPlaybackEngine::OpenStream(int sampleRate) {
 }
 
 void AudioPlaybackEngine::CloseStream() {
+    std::lock_guard<std::mutex> streamLock(streamMutex_);
     if (outstream_) {
         soundio_outstream_pause(outstream_, true);
         soundio_outstream_destroy(outstream_);
@@ -428,7 +434,7 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
     targetFrame = std::clamp<int64_t>(targetFrame, 0, total);
 
     // Flush existing ring buffer contents safely
-    if (outstream_ && isActivelyStreaming_.load(std::memory_order_relaxed)) {
+    if (isActivelyStreaming_.load(std::memory_order_relaxed)) {
         flushAck_.store(false, std::memory_order_release);
         flushRequested_.store(true, std::memory_order_release);
         // Wait for audio callback to acknowledge discard (up to 30ms)
@@ -459,41 +465,69 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
 
 void AudioPlaybackEngine::DecoderThreadLoop() {
     while (!stopDecoder_.load(std::memory_order_relaxed)) {
-        DecoderCommand cmd;
-        {
-            std::lock_guard<std::mutex> lock(commandMutex_);
-            cmd = pendingCommand_;
-            pendingCommand_.type = DecoderCommandType::None;
-        }
+        // 1. Drain FIFO command queue
+        while (true) {
+            DecoderCommand cmd;
+            {
+                std::lock_guard<std::mutex> lock(commandMutex_);
+                if (commandQueue_.empty()) break;
+                cmd = commandQueue_.front();
+                commandQueue_.pop();
+            }
 
-        if (cmd.type == DecoderCommandType::LoadAndPlay) {
-            if (!cmd.filePath.empty() && (cmd.filePath != currentFilePath_ || decodedPcm_.empty())) {
-                bool ok = LoadAndDecodeTrack(cmd.filePath);
-                if (!ok) {
-                    isPlaying_.store(false, std::memory_order_release);
-                    continue;
+            if (cmd.type == DecoderCommandType::LoadAndPlay) {
+                if (!cmd.filePath.empty() && (cmd.filePath != currentFilePath_ || decodedPcm_.empty())) {
+                    bool ok = LoadAndDecodeTrack(cmd.filePath);
+                    if (!ok) {
+                        isPlaying_.store(false, std::memory_order_release);
+                        continue;
+                    }
+                    OpenStream(sampleRate_.load(std::memory_order_relaxed));
                 }
-                OpenStream(sampleRate_.load(std::memory_order_relaxed));
+                uint32_t rate = sampleRate_.load(std::memory_order_relaxed);
+                if (rate == 0) rate = 44100;
+                int64_t targetFrame = static_cast<int64_t>((cmd.offsetMs * static_cast<double>(rate)) / 1000.0);
+                ExecuteSeek(targetFrame);
+
+                isPlaying_.store(true, std::memory_order_release);
+                isPaused_.store(false, std::memory_order_release);
+                std::lock_guard<std::mutex> streamLock(streamMutex_);
+                if (outstream_) {
+                    soundio_outstream_pause(outstream_, false);
+                    isActivelyStreaming_.store(true, std::memory_order_release);
+                }
+            } else if (cmd.type == DecoderCommandType::Pause) {
+                isPaused_.store(true, std::memory_order_release);
+                std::lock_guard<std::mutex> streamLock(streamMutex_);
+                if (outstream_) {
+                    soundio_outstream_pause(outstream_, true);
+                }
+                isActivelyStreaming_.store(false, std::memory_order_release);
+            } else if (cmd.type == DecoderCommandType::Resume) {
+                isPaused_.store(false, std::memory_order_release);
+                isPlaying_.store(true, std::memory_order_release);
+                std::lock_guard<std::mutex> streamLock(streamMutex_);
+                if (outstream_) {
+                    soundio_outstream_pause(outstream_, false);
+                    isActivelyStreaming_.store(true, std::memory_order_release);
+                }
+            } else if (cmd.type == DecoderCommandType::Stop) {
+                isPlaying_.store(false, std::memory_order_release);
+                isPaused_.store(false, std::memory_order_release);
+                currentFrame_.store(0, std::memory_order_release);
+                decodeReadHead_ = 0;
+                ringBuffer_.clear();
+                std::lock_guard<std::mutex> streamLock(streamMutex_);
+                if (outstream_) {
+                    soundio_outstream_pause(outstream_, true);
+                }
+                isActivelyStreaming_.store(false, std::memory_order_release);
+            } else if (cmd.type == DecoderCommandType::Seek) {
+                uint32_t rate = sampleRate_.load(std::memory_order_relaxed);
+                if (rate == 0) rate = 44100;
+                int64_t targetFrame = static_cast<int64_t>((cmd.offsetMs * static_cast<double>(rate)) / 1000.0);
+                ExecuteSeek(targetFrame);
             }
-            uint32_t rate = sampleRate_.load(std::memory_order_relaxed);
-            if (rate == 0) rate = 44100;
-            int64_t targetFrame = static_cast<int64_t>((cmd.offsetMs * static_cast<double>(rate)) / 1000.0);
-            ExecuteSeek(targetFrame);
-            isPaused_.store(false, std::memory_order_release);
-            isPlaying_.store(true, std::memory_order_release);
-            if (outstream_) {
-                soundio_outstream_pause(outstream_, false);
-                isActivelyStreaming_.store(true, std::memory_order_release);
-            }
-        } else if (cmd.type == DecoderCommandType::Seek) {
-            uint32_t rate = sampleRate_.load(std::memory_order_relaxed);
-            if (rate == 0) rate = 44100;
-            int64_t targetFrame = static_cast<int64_t>((cmd.offsetMs * static_cast<double>(rate)) / 1000.0);
-            ExecuteSeek(targetFrame);
-        } else if (cmd.type == DecoderCommandType::Stop) {
-            ringBuffer_.clear();
-            decodeReadHead_ = 0;
-            isActivelyStreaming_.store(false, std::memory_order_release);
         }
 
         bool playing = isPlaying_.load(std::memory_order_acquire);
@@ -519,7 +553,7 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
         std::unique_lock<std::mutex> lock(commandMutex_);
         decoderCv_.wait_for(lock, std::chrono::milliseconds(5), [&] {
             return stopDecoder_.load(std::memory_order_relaxed) ||
-                   pendingCommand_.type != DecoderCommandType::None ||
+                   !commandQueue_.empty() ||
                    (isPlaying_.load(std::memory_order_relaxed) &&
                     !isPaused_.load(std::memory_order_relaxed) &&
                     ringBuffer_.availableWrite() >= 2048);
@@ -583,14 +617,12 @@ bool AudioPlaybackEngine::Play(const std::string& filePath, double startOffsetMs
     if (rate == 0) rate = 44100;
     int64_t targetFrame = static_cast<int64_t>((startOffsetMs * static_cast<double>(rate)) / 1000.0);
     currentFrame_.store(targetFrame, std::memory_order_release);
-    isPaused_.store(false, std::memory_order_release);
     isPlaying_.store(true, std::memory_order_release);
+    isPaused_.store(false, std::memory_order_release);
 
     {
         std::lock_guard<std::mutex> lock(commandMutex_);
-        pendingCommand_.type = DecoderCommandType::LoadAndPlay;
-        pendingCommand_.filePath = filePath;
-        pendingCommand_.offsetMs = startOffsetMs;
+        commandQueue_.push({DecoderCommandType::LoadAndPlay, filePath, startOffsetMs});
     }
     decoderCv_.notify_one();
     return true;
@@ -604,9 +636,9 @@ bool AudioPlaybackEngine::Pause() {
         return Resume();
     }
     isPaused_.store(true, std::memory_order_release);
-    isActivelyStreaming_.store(false, std::memory_order_release);
-    if (outstream_) {
-        soundio_outstream_pause(outstream_, true);
+    {
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        commandQueue_.push({DecoderCommandType::Pause, "", 0.0});
     }
     decoderCv_.notify_one();
     return true;
@@ -616,9 +648,9 @@ bool AudioPlaybackEngine::Resume() {
     if (isPaused_.load(std::memory_order_relaxed)) {
         isPaused_.store(false, std::memory_order_release);
         isPlaying_.store(true, std::memory_order_release);
-        if (outstream_) {
-            soundio_outstream_pause(outstream_, false);
-            isActivelyStreaming_.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(commandMutex_);
+            commandQueue_.push({DecoderCommandType::Resume, "", 0.0});
         }
         decoderCv_.notify_one();
         return true;
@@ -636,14 +668,10 @@ bool AudioPlaybackEngine::Resume() {
 bool AudioPlaybackEngine::Stop() {
     isPlaying_.store(false, std::memory_order_release);
     isPaused_.store(false, std::memory_order_release);
-    isActivelyStreaming_.store(false, std::memory_order_release);
     currentFrame_.store(0, std::memory_order_release);
-    if (outstream_) {
-        soundio_outstream_pause(outstream_, true);
-    }
     {
         std::lock_guard<std::mutex> lock(commandMutex_);
-        pendingCommand_.type = DecoderCommandType::Stop;
+        commandQueue_.push({DecoderCommandType::Stop, "", 0.0});
     }
     decoderCv_.notify_one();
     return true;
@@ -664,8 +692,7 @@ bool AudioPlaybackEngine::Seek(double offsetMs) {
 
     {
         std::lock_guard<std::mutex> lock(commandMutex_);
-        pendingCommand_.type = DecoderCommandType::Seek;
-        pendingCommand_.offsetMs = offsetMs;
+        commandQueue_.push({DecoderCommandType::Seek, "", offsetMs});
     }
     decoderCv_.notify_one();
     return true;

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <queue>
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -20,8 +21,10 @@ struct PlaybackPosition {
 enum class DecoderCommandType {
     None,
     LoadAndPlay,
-    Seek,
-    Stop
+    Pause,
+    Resume,
+    Stop,
+    Seek
 };
 
 struct DecoderCommand {
@@ -63,10 +66,11 @@ private:
     bool LoadAndDecodeTrack(const std::string& filePath);
     void ExecuteSeek(int64_t targetFrame);
 
-    // libsoundio objects
+    // libsoundio objects - manipulated exclusively on decoderThread_ with streamMutex_
     SoundIo* soundio_{nullptr};
     SoundIoDevice* device_{nullptr};
     SoundIoOutStream* outstream_{nullptr};
+    std::mutex streamMutex_;
 
     // Atomic playback state
     std::atomic<bool> isPlaying_{false};
@@ -81,12 +85,12 @@ private:
     // Exclusively written by decoderThread_, read by SoundIo audio callback
     SpscRingBuffer<float> ringBuffer_{262144};
 
-    // Decoder background thread and synchronization
+    // Decoder background thread and FIFO command queue
     std::thread decoderThread_;
     std::mutex commandMutex_;
     std::condition_variable decoderCv_;
     std::atomic<bool> stopDecoder_{false};
-    DecoderCommand pendingCommand_;
+    std::queue<DecoderCommand> commandQueue_;
 
     // Safe flush coordination between producer (decoder) and consumer (audio callback)
     std::atomic<bool> flushRequested_{false};
