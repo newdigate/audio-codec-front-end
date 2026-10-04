@@ -425,9 +425,9 @@ public:
             }
             case CodecType::Flac: {
                 size_t framesDecoded = 0;
-                float floatChunk[4096];
+                float floatChunk[8192];
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
-                    size_t maxSamples = std::min<size_t>((maxFrames - framesDecoded) * channels_, 4096);
+                    size_t maxSamples = std::min<size_t>((maxFrames - framesDecoded) * channels_, 8192);
                     int samples = flacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
                                                             floatChunk, maxSamples);

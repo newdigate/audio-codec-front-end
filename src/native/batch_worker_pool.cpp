@@ -189,7 +189,16 @@ void BatchWorkerPool::ProcessFile(const std::string& filePath, bool flatSidecar)
     StreamingAudioPcmReader streamingReader(decoder);
 
     uint64_t estFrames = decoder.GetTotalFrames();
-    size_t apvCapacity = std::max<size_t>(65536, 1024 + (estFrames / 128 + 64) * 4 * 2);
+    if (estFrames == 0) {
+        std::error_code fsec;
+        auto fsize = std::filesystem::file_size(filePath, fsec);
+        if (!fsec && fsize > 0) {
+            estFrames = std::max<uint64_t>(44100ULL * 600, (static_cast<uint64_t>(fsize) / 4) * 8);
+        } else {
+            estFrames = 44100ULL * 600; // 10 minutes default
+        }
+    }
+    size_t apvCapacity = std::max<size_t>(1048576, 1024 + (estFrames / 128 + 64) * 4 * 2);
     std::vector<uint8_t> apvStorage(apvCapacity, 0);
     audio_codecs::preview::MemoryWriter apvWriter(apvStorage.data(), apvStorage.size());
 
