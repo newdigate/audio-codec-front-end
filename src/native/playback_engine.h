@@ -17,6 +17,19 @@ struct PlaybackPosition {
     double currentMs{0.0};
 };
 
+enum class DecoderCommandType {
+    None,
+    LoadAndPlay,
+    Seek,
+    Stop
+};
+
+struct DecoderCommand {
+    DecoderCommandType type{DecoderCommandType::None};
+    std::string filePath;
+    double offsetMs{0.0};
+};
+
 class AudioPlaybackEngine {
 public:
     AudioPlaybackEngine();
@@ -42,11 +55,13 @@ private:
     static void OnErrorCallback(struct SoundIoOutStream* stream, int err);
 
     void HandleAudioWrite(struct SoundIoOutStream* stream, int frame_count_min, int frame_count_max);
+    void WriteSilence(struct SoundIoOutStream* stream, int frame_count_max);
 
     void DecoderThreadLoop();
     void StopDecoder();
 
     bool LoadAndDecodeTrack(const std::string& filePath);
+    void ExecuteSeek(int64_t targetFrame);
 
     // libsoundio objects
     SoundIo* soundio_{nullptr};
@@ -56,29 +71,31 @@ private:
     // Atomic playback state
     std::atomic<bool> isPlaying_{false};
     std::atomic<bool> isPaused_{false};
+    std::atomic<bool> isActivelyStreaming_{false};
     std::atomic<int64_t> currentFrame_{0};
     std::atomic<int64_t> totalFrames_{0};
     std::atomic<uint32_t> sampleRate_{44100};
     std::atomic<float> volume_{1.0f};
 
     // Lock-free ring buffer (stereo floats)
-    // 262144 floats = 131072 stereo frames (~2.97s at 44.1kHz)
+    // Exclusively written by decoderThread_, read by SoundIo audio callback
     SpscRingBuffer<float> ringBuffer_{262144};
 
     // Decoder background thread and synchronization
     std::thread decoderThread_;
-    std::mutex decoderMutex_;
+    std::mutex commandMutex_;
     std::condition_variable decoderCv_;
     std::atomic<bool> stopDecoder_{false};
+    DecoderCommand pendingCommand_;
 
-    // Seek synchronization
-    std::atomic<bool> seekPending_{false};
-    std::atomic<int64_t> seekTargetFrame_{0};
+    // Safe flush coordination between producer (decoder) and consumer (audio callback)
+    std::atomic<bool> flushRequested_{false};
+    std::atomic<bool> flushAck_{false};
 
-    // Decoded audio cache
+    // Decoded audio cache (accessed and mutated EXCLUSIVELY by decoderThread_)
     std::string currentFilePath_;
     std::vector<float> decodedPcm_; // stereo interleaved floats
-    std::atomic<int64_t> decodeReadHead_{0};
+    int64_t decodeReadHead_{0};
 };
 
 } // namespace audio_front_end

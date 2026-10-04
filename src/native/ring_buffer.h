@@ -45,6 +45,12 @@ public:
         tail_.store(0, std::memory_order_relaxed);
     }
 
+    // Consumer-only safe buffer drain
+    void discardAll() {
+        size_t head = head_.load(std::memory_order_acquire);
+        tail_.store(head, std::memory_order_release);
+    }
+
     size_t availableRead() const {
         size_t head = head_.load(std::memory_order_acquire);
         size_t tail = tail_.load(std::memory_order_relaxed);
