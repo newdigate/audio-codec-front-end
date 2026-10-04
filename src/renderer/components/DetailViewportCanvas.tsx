@@ -163,7 +163,10 @@ export const DetailViewportCanvas: React.FC<DetailViewportCanvasProps> = ({
       if (activeLod && activeLod.peaks && activeLod.chunkCount > 0) {
         const { peaks, chunkCount, downsampleRatio } = activeLod;
         const bpc = Math.max(2, Math.floor(peaks.length / chunkCount));
-        const chunkDurationMs = ((downsampleRatio || 1) / sr) * 1000;
+        const chunkDurationMs =
+          chunkCount > 0
+            ? durationMs / chunkCount
+            : (((downsampleRatio || 1) * 128) / sr) * 1000;
 
         for (let x = 0; x < width; x++) {
           const t1 = pixelToTime(x, viewStartMs, viewEndMs, width);
@@ -404,14 +407,14 @@ export const DetailViewportCanvas: React.FC<DetailViewportCanvasProps> = ({
       const curMouseX = clamp(moveEvt.clientX - currentRect.left, 0, currentRect.width);
       const curTimeMs = pixelToTime(curMouseX, viewStartMs, viewEndMs, currentRect.width);
 
-      if (drag.isShift || (!drag.button && !moveEvt.altKey && drag.hasDragged)) {
-        // Selection drag
+      if (drag.isShift) {
+        // Shift-drag: Selection drag
         onSelectionChange(
           Math.min(drag.startTimeMs, curTimeMs),
           Math.max(drag.startTimeMs, curTimeMs)
         );
-      } else if (drag.button === 1 || moveEvt.altKey) {
-        // Pan drag
+      } else {
+        // Standard drag or middle click: Pan drag
         const span = drag.initialViewEnd - drag.initialViewStart;
         const shiftMs = (deltaX / currentRect.width) * span;
         let newStart = drag.initialViewStart - shiftMs;
@@ -436,13 +439,14 @@ export const DetailViewportCanvas: React.FC<DetailViewportCanvasProps> = ({
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
 
-      // If clicked without dragging -> Seek!
+      // If clicked without dragging -> Seek & clear selection!
       if (!drag.hasDragged && drag.button === 0) {
         const currentRect = containerRef.current?.getBoundingClientRect();
         if (currentRect && currentRect.width > 0) {
           const upX = clamp(upEvt.clientX - currentRect.left, 0, currentRect.width);
           const seekTime = pixelToTime(upX, viewStartMs, viewEndMs, currentRect.width);
           onSeek(clamp(seekTime, 0, durationMs));
+          onSelectionChange(null, null);
         }
       }
     };
@@ -450,6 +454,17 @@ export const DetailViewportCanvas: React.FC<DetailViewportCanvasProps> = ({
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   };
+
+  // Escape key clears selection
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onSelectionChange(null, null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onSelectionChange]);
 
   return (
     <div

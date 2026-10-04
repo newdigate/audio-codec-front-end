@@ -120,11 +120,74 @@ describe('DetailViewportCanvas Component', () => {
       toJSON: () => {},
     });
 
-    // Simple click without drag seeks to clicked time (250px -> 1250ms)
+    // Simple click without drag seeks to clicked time (250px -> 1250ms) AND clears selection
     fireEvent.mouseDown(canvasWrapper, { clientX: 250, button: 0 });
     fireEvent.mouseUp(window, { clientX: 250, button: 0 });
 
     expect(onSeek).toHaveBeenCalledWith(1250);
+    expect(onSelectionChange).toHaveBeenCalledWith(null, null);
+  });
+
+  it('handles standard drag to pan viewport', () => {
+    const onViewRangeChange = vi.fn();
+    render(
+      <DetailViewportCanvas
+        durationMs={10000}
+        sampleRate={44100}
+        channels={2}
+        viewStartMs={2000}
+        viewEndMs={6000}
+        lods={mockLods}
+        beatMarkers={mockBeatMarkers}
+        selectionStartMs={null}
+        selectionEndMs={null}
+        onViewRangeChange={onViewRangeChange}
+        onSelectionChange={() => {}}
+        onSeek={() => {}}
+      />
+    );
+
+    const canvasWrapper = screen.getByTestId('detail-viewport-canvas');
+    vi.spyOn(canvasWrapper, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 300,
+      right: 1000,
+      bottom: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    });
+
+    // Standard drag without Shift: start at 500, move to 400 (drag left 100px)
+    fireEvent.mouseDown(canvasWrapper, { clientX: 500, button: 0 });
+    fireEvent.mouseMove(window, { clientX: 400 });
+
+    expect(onViewRangeChange).toHaveBeenCalled();
+  });
+
+  it('handles Escape key to clear selection', () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <DetailViewportCanvas
+        durationMs={10000}
+        sampleRate={44100}
+        channels={2}
+        viewStartMs={0}
+        viewEndMs={10000}
+        lods={mockLods}
+        beatMarkers={mockBeatMarkers}
+        selectionStartMs={1000}
+        selectionEndMs={3000}
+        onViewRangeChange={() => {}}
+        onSelectionChange={onSelectionChange}
+        onSeek={() => {}}
+      />
+    );
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onSelectionChange).toHaveBeenCalledWith(null, null);
   });
 
   it('handles mouse wheel zoom centered at cursor', () => {
@@ -355,5 +418,47 @@ describe('WaveView Component', () => {
 
     const zoomFitBtn = screen.getByRole('button', { name: /fit to window/i });
     fireEvent.click(zoomFitBtn);
+  });
+
+  it('allows clearing selection via Escape key and clear button', async () => {
+    render(<WaveView filePath="/audio/lead.wav" fileName="lead.wav" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('detail-viewport-canvas')).toBeDefined();
+    });
+
+    const canvasWrapper = screen.getByTestId('detail-viewport-canvas');
+    vi.spyOn(canvasWrapper, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 1000,
+      height: 300,
+      right: 1000,
+      bottom: 300,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    });
+
+    // Create selection with Shift-drag
+    fireEvent.mouseDown(canvasWrapper, { clientX: 250, shiftKey: true, button: 0 });
+    fireEvent.mouseMove(window, { clientX: 500, shiftKey: true });
+
+    // Loop info and clear button should appear
+    expect(screen.getByText(/Loop: 00:01\.000 - 00:02\.000/i)).toBeDefined();
+    const clearBtn = screen.getByRole('button', { name: /clear selection/i });
+    expect(clearBtn).toBeDefined();
+
+    // Click clear button
+    fireEvent.click(clearBtn);
+    expect(screen.queryByText(/Loop: 00:01\.000/i)).toBeNull();
+
+    // Re-create selection and clear with Escape key
+    fireEvent.mouseDown(canvasWrapper, { clientX: 250, shiftKey: true, button: 0 });
+    fireEvent.mouseMove(window, { clientX: 500, shiftKey: true });
+    expect(screen.getByText(/Loop: 00:01\.000 - 00:02\.000/i)).toBeDefined();
+
+    fireEvent.keyDown(window, { code: 'Escape' });
+    expect(screen.queryByText(/Loop: 00:01\.000/i)).toBeNull();
   });
 });

@@ -92,17 +92,29 @@ export const WaveView: React.FC<WaveViewProps> = ({
     };
   }, []);
 
+  const handleClearSelection = useCallback(() => {
+    setSelectionStartMs(null);
+    setSelectionEndMs(null);
+  }, []);
+
   // Transport handlers
   const handlePlay = useCallback(async () => {
     if (!window.audioApi?.playbackPlay) return;
     try {
-      const startPos = selectionStartMs !== null ? selectionStartMs : playbackState.currentMs;
+      let startPos = playbackState.currentMs;
+      if (selectionStartMs !== null && selectionEndMs !== null) {
+        const sMin = Math.min(selectionStartMs, selectionEndMs);
+        const sMax = Math.max(selectionStartMs, selectionEndMs);
+        if (startPos < sMin || startPos >= sMax) {
+          startPos = sMin;
+        }
+      }
       await window.audioApi.playbackPlay(filePath, startPos);
       setPlaybackState((prev) => ({ ...prev, isPlaying: true, currentMs: startPos }));
     } catch (err) {
       console.error('Failed to start playback:', err);
     }
-  }, [filePath, playbackState.currentMs, selectionStartMs]);
+  }, [filePath, playbackState.currentMs, selectionStartMs, selectionEndMs]);
 
   const handlePause = useCallback(async () => {
     if (!window.audioApi?.playbackPause) return;
@@ -169,6 +181,11 @@ export const WaveView: React.FC<WaveViewProps> = ({
       if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
         return;
       }
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        handleClearSelection();
+        return;
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         handleTogglePlayPause();
@@ -179,7 +196,7 @@ export const WaveView: React.FC<WaveViewProps> = ({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [handleTogglePlayPause]);
+  }, [handleTogglePlayPause, handleClearSelection]);
 
   // Viewport Zoom controls
   const handleZoomIn = useCallback(() => {
@@ -366,8 +383,24 @@ export const WaveView: React.FC<WaveViewProps> = ({
           {analysis ? ` • ${analysis.channels === 1 ? 'Mono' : 'Stereo'} • ${(analysis.sampleRate / 1000).toFixed(1)} kHz` : ''}
         </span>
         {selectionStartMs !== null && selectionEndMs !== null && (
-          <span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             Loop: {formatTimecode(Math.min(selectionStartMs, selectionEndMs))} - {formatTimecode(Math.max(selectionStartMs, selectionEndMs))} (Δ {formatTimecode(Math.abs(selectionEndMs - selectionStartMs))})
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-dim)',
+                cursor: 'pointer',
+                padding: '0 4px',
+                fontSize: '11px',
+              }}
+              title="Clear selection (Esc)"
+              aria-label="Clear selection"
+            >
+              ✕
+            </button>
           </span>
         )}
         <span>{loading ? 'Analyzing...' : error ? `Error: ${error}` : 'Ready'}</span>
