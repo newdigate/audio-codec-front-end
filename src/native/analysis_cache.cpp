@@ -132,6 +132,12 @@ bool AnalysisCache::ReadCache(const std::string& audioPath, CachedAnalysisData& 
         return false;
     }
 
+    std::error_code ec;
+    uintmax_t apvFileSize = fs::file_size(apvPath, ec);
+    if (ec) return false;
+    uintmax_t attFileSize = fs::file_size(attPath, ec);
+    if (ec) return false;
+
     audio_codecs::preview::ApvHeader apvHdr{};
     {
         std::ifstream apvFile(apvPath, std::ios::binary);
@@ -154,6 +160,10 @@ bool AnalysisCache::ReadCache(const std::string& audioPath, CachedAnalysisData& 
             if (desc.chunk_count > 0 && desc.file_offset >= sizeof(audio_codecs::preview::ApvHeader)) {
                 size_t bpc = apvHdr.bytes_per_chunk ? apvHdr.bytes_per_chunk : (apvHdr.channels == 2 ? 4 : 2);
                 size_t totalBytes = static_cast<size_t>(desc.chunk_count) * bpc;
+                // Defensive check against corrupted / truncated files
+                if (desc.file_offset + totalBytes > apvFileSize || desc.file_offset + totalBytes < desc.file_offset) {
+                    return false;
+                }
                 lod.peaks.resize(totalBytes);
                 apvFile.seekg(desc.file_offset);
                 if (!apvFile.read(reinterpret_cast<char*>(lod.peaks.data()), totalBytes)) {
@@ -181,8 +191,12 @@ bool AnalysisCache::ReadCache(const std::string& audioPath, CachedAnalysisData& 
             attFile.seekg(attHdr.beat_grid_offset);
             size_t markerSize = attHdr.beat_marker_size ? attHdr.beat_marker_size : sizeof(audio_codecs::tempo::AttBeatMarker);
             if (markerSize == sizeof(audio_codecs::tempo::AttBeatMarker)) {
+                size_t totalBytes = static_cast<size_t>(attHdr.beat_grid_count) * sizeof(audio_codecs::tempo::AttBeatMarker);
+                // Defensive check against corrupted / truncated files
+                if (attHdr.beat_grid_offset + totalBytes > attFileSize || attHdr.beat_grid_offset + totalBytes < attHdr.beat_grid_offset) {
+                    return false;
+                }
                 std::vector<audio_codecs::tempo::AttBeatMarker> markers(attHdr.beat_grid_count);
-                size_t totalBytes = attHdr.beat_grid_count * sizeof(audio_codecs::tempo::AttBeatMarker);
                 if (!attFile.read(reinterpret_cast<char*>(markers.data()), totalBytes)) {
                     return false;
                 }
@@ -262,6 +276,9 @@ bool AnalysisCache::WriteCache(const std::string& audioPath,
             apvCopy.lods[i].file_offset = currentOffset;
             currentOffset += lodData[i].size();
         }
+    } else {
+        apvCopy.lod_count = 0;
+        apvCopy.flags &= ~static_cast<uint16_t>(audio_codecs::preview::APV_FLAG_HAS_LODS);
     }
 
     {
@@ -270,7 +287,7 @@ bool AnalysisCache::WriteCache(const std::string& audioPath,
         if (!apvFile.write(reinterpret_cast<const char*>(&apvCopy), sizeof(apvCopy))) {
             return false;
         }
-        for (size_t i = 0; i < apvCopy.lod_count; ++i) {
+        for (size_t i = 0; i < apvCopy.lod_count && i < lodData.size(); ++i) {
             if (!lodData[i].empty()) {
                 if (!apvFile.write(reinterpret_cast<const char*>(lodData[i].data()), lodData[i].size())) {
                     return false;
@@ -296,6 +313,10 @@ bool AnalysisCache::WriteCache(const std::string& audioPath,
         attCopy.total_beats = attCopy.beat_grid_count;
         attCopy.beat_marker_size = sizeof(audio_codecs::tempo::AttBeatMarker);
         attCopy.beat_grid_offset = sizeof(audio_codecs::tempo::AttHeader);
+    } else {
+        attCopy.beat_grid_count = 0;
+        attCopy.total_beats = 0;
+        attCopy.beat_grid_offset = 0;
     }
 
     {

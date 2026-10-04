@@ -48,16 +48,17 @@ void test_basic_cache_workflow() {
 }
 
 void test_path_resolution() {
-    std::string audio = "/path/to/track.wav";
+    fs::path basePath = fs::path("path") / "to" / "track.wav";
+    std::string audio = basePath.string();
     auto apvDefault = audio_front_end::AnalysisCache::GetApvPath(audio, false);
     auto attDefault = audio_front_end::AnalysisCache::GetAttPath(audio, false);
-    assert(apvDefault == "/path/to/.analysis/track.wav.apv");
-    assert(attDefault == "/path/to/.analysis/track.wav.att");
+    assert(apvDefault == fs::path("path") / "to" / ".analysis" / "track.wav.apv");
+    assert(attDefault == fs::path("path") / "to" / ".analysis" / "track.wav.att");
 
     auto apvFlat = audio_front_end::AnalysisCache::GetApvPath(audio, true);
     auto attFlat = audio_front_end::AnalysisCache::GetAttPath(audio, true);
-    assert(apvFlat == "/path/to/track.wav.apv");
-    assert(attFlat == "/path/to/track.wav.att");
+    assert(apvFlat == fs::path("path") / "to" / "track.wav.apv");
+    assert(attFlat == fs::path("path") / "to" / "track.wav.att");
 
     std::cout << "test_path_resolution PASSED" << std::endl;
 }
@@ -151,10 +152,72 @@ void test_flat_sidecar_and_invalidation() {
     std::cout << "test_flat_sidecar_and_invalidation PASSED" << std::endl;
 }
 
+void test_defensive_edge_cases() {
+    fs::path tempDir = fs::temp_directory_path() / "test_audio_cache_defensive";
+    fs::create_directories(tempDir);
+    fs::path sampleAudio = tempDir / "edge.wav";
+    {
+        std::ofstream f(sampleAudio, std::ios::binary);
+        f.write("RIFFtestdata", 12);
+    }
+
+    audio_front_end::AnalysisCache cache;
+
+    // 1. lodData is empty, but apv has lod_count > 0
+    audio_codecs::preview::ApvHeader apv{};
+    apv.source_file_size = 12;
+    apv.duration_ms = 500;
+    apv.sample_rate = 44100;
+    apv.channels = 2;
+    apv.lod_count = 3;
+    apv.flags |= audio_codecs::preview::APV_FLAG_HAS_LODS;
+
+    // beatMarkers is empty, but att has beat_grid_count > 0
+    audio_codecs::tempo::AttHeader att{};
+    att.duration_ms = 500;
+    att.global_bpm_q16 = 120 << 16;
+    att.beat_grid_count = 10;
+    att.total_beats = 10;
+    att.beat_grid_offset = 128;
+
+    assert(cache.WriteCache(sampleAudio.string(), apv, {}, att, {}, false));
+
+    // Verify ReadCache reads correctly without crashing
+    audio_front_end::CachedAnalysisData data;
+    assert(cache.ReadCache(sampleAudio.string(), data, false));
+    assert(data.lods.empty());
+    assert(data.beats.empty());
+
+    // 2. Corrupted file test: file claims huge chunk_count exceeding file size
+    fs::path apvPath = audio_front_end::AnalysisCache::GetApvPath(sampleAudio.string(), false);
+    {
+        audio_codecs::preview::ApvHeader corruptedApv{};
+        std::ifstream in(apvPath, std::ios::binary);
+        in.read(reinterpret_cast<char*>(&corruptedApv), sizeof(corruptedApv));
+        in.close();
+
+        corruptedApv.lod_count = 1;
+        corruptedApv.lods[0].chunk_count = 1000000;
+        corruptedApv.lods[0].file_offset = 128;
+
+        std::ofstream out(apvPath, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(&corruptedApv), sizeof(corruptedApv));
+    }
+
+    // ReadCache should safely reject the corrupted file without allocating massive memory
+    audio_front_end::CachedAnalysisData corruptData;
+    assert(!cache.ReadCache(sampleAudio.string(), corruptData, false));
+
+    fs::remove_all(tempDir);
+    std::cout << "test_defensive_edge_cases PASSED" << std::endl;
+}
+
 int main() {
     test_path_resolution();
     test_basic_cache_workflow();
     test_flat_sidecar_and_invalidation();
+    test_defensive_edge_cases();
     std::cout << "test_analysis_cache PASSED" << std::endl;
     return 0;
 }
+
