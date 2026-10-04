@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { HeaderBar } from './components/HeaderBar';
 import { TabBar, TabItem } from './components/TabBar';
 import { FolderBrowserView } from './components/FolderBrowserView';
+import { WaveView } from './components/WaveView';
 import type { AudioFileInfo, BatchProgressUpdate, PlaybackState } from '../shared/audio_types';
 import './styles/theme.css';
 
@@ -11,7 +12,7 @@ export const App: React.FC = () => {
   const [flatSidecar, setFlatSidecar] = useState<boolean>(false);
   const [batchRunning, setBatchRunning] = useState<boolean>(false);
   const [batchPaused, setBatchPaused] = useState<boolean>(false);
-  const [playbackState, setPlaybackState] = useState<PlaybackState>({
+  const [, setPlaybackState] = useState<PlaybackState>({
     isPlaying: false,
     currentMs: 0,
   });
@@ -177,19 +178,14 @@ export const App: React.FC = () => {
             folderPath={folderPath}
             files={files}
             onOpenFileTab={handleOpenFileTab}
+            onOpenFolder={handleOpenFolder}
           />
         ) : (
-          <div className="view-placeholder" data-testid="wave-view-placeholder">
-            <span className="view-placeholder-title">🌊 SynthUI Waveform View</span>
-            <span className="view-placeholder-sub">
-              Active File: {activeTab?.title || activeTab?.filePath}
-            </span>
-            {playbackState.isPlaying && (
-              <span className="view-placeholder-sub">
-                Playing at {playbackState.currentMs.toFixed(0)} ms
-              </span>
-            )}
-          </div>
+          <WaveView
+            filePath={activeTab.filePath || activeTab.id}
+            fileName={activeTab.title}
+            flatSidecar={flatSidecar}
+          />
         )}
       </main>
     </div>

@@ -228,7 +228,7 @@ describe('App Layout & Shell Integration', () => {
 
   it('opens folder and populates files when clicking Open Folder', async () => {
     render(<App />);
-    const openBtn = screen.getByRole('button', { name: /open folder/i });
+    const openBtn = screen.getAllByRole('button', { name: /open folder/i })[0];
     fireEvent.click(openBtn);
 
     await waitFor(() => {
@@ -242,7 +242,7 @@ describe('App Layout & Shell Integration', () => {
 
   it('handles batch pause / resume in App', async () => {
     render(<App />);
-    const openBtn = screen.getByRole('button', { name: /open folder/i });
+    const openBtn = screen.getAllByRole('button', { name: /open folder/i })[0];
     fireEvent.click(openBtn);
 
     await waitFor(() => {
@@ -268,7 +268,7 @@ describe('App Layout & Shell Integration', () => {
 
   it('updates file status and batch progress when onBatchProgress fires', async () => {
     render(<App />);
-    const openBtn = screen.getByRole('button', { name: /open folder/i });
+    const openBtn = screen.getAllByRole('button', { name: /open folder/i })[0];
     fireEvent.click(openBtn);
 
     await waitFor(() => {
@@ -304,7 +304,7 @@ describe('App Layout & Shell Integration', () => {
 
   it('opens audio file in dynamic tab and switches view between folder and waveform', async () => {
     render(<App />);
-    const openBtn = screen.getByRole('button', { name: /open folder/i });
+    const openBtn = screen.getAllByRole('button', { name: /open folder/i })[0];
     fireEvent.click(openBtn);
 
     await waitFor(() => {
