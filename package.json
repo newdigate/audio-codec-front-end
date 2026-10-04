@@ -8,7 +8,7 @@
     "build": "tsc && vite build && electron-builder --dir",
     "build:native": "cmake-js compile",
     "build:native:debug": "cmake-js compile --debug",
-    "test:native": "node tests/native/smoke_test.js",
+    "test:native": "./build/tests/test_analysis_cache && node tests/native/smoke_test.js",
     "test": "vitest run"
   },
   "dependencies": {
