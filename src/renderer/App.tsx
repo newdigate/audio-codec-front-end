@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { HeaderBar } from './components/HeaderBar';
 import { TabBar, TabItem } from './components/TabBar';
+import { FolderBrowserView } from './components/FolderBrowserView';
 import type { AudioFileInfo, BatchProgressUpdate, PlaybackState } from '../shared/audio_types';
 import './styles/theme.css';
 
@@ -172,29 +173,11 @@ export const App: React.FC = () => {
 
       <main className="main-content" role="region" aria-label="Main content">
         {activeTab?.isPinned ? (
-          <div className="view-placeholder" data-testid="folder-browser-placeholder">
-            <span className="view-placeholder-title">📁 Folder Browser View</span>
-            <span className="view-placeholder-sub">
-              {folderPath
-                ? `${files.length} audio files loaded from ${folderPath}`
-                : 'No folder opened. Click "Open Folder" to browse audio samples.'}
-            </span>
-            {files.length > 0 && (
-              <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8, maxWidth: 640 }}>
-                {files.map((file) => (
-                  <button
-                    key={file.filePath}
-                    type="button"
-                    className="header-btn"
-                    onClick={() => handleOpenFileTab(file)}
-                    aria-label={`Open ${file.fileName}`}
-                  >
-                    🎵 {file.fileName}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <FolderBrowserView
+            folderPath={folderPath}
+            files={files}
+            onOpenFileTab={handleOpenFileTab}
+          />
         ) : (
           <div className="view-placeholder" data-testid="wave-view-placeholder">
             <span className="view-placeholder-title">🌊 SynthUI Waveform View</span>
