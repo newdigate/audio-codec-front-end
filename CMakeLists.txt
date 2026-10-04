@@ -11,6 +11,7 @@ if(EXISTS "${AUDIO_CODECS_LOCAL_PATH}/CMakeLists.txt")
     message(STATUS "Using local audio-codecs from: ${AUDIO_CODECS_LOCAL_PATH}")
     add_subdirectory("${AUDIO_CODECS_LOCAL_PATH}" audio_codecs_build EXCLUDE_FROM_ALL)
     set(AUDIO_CODECS_INCLUDE_DIR "${AUDIO_CODECS_LOCAL_PATH}/include")
+    set(AUDIO_CODECS_ROOT_DIR "${AUDIO_CODECS_LOCAL_PATH}")
 else()
     include(FetchContent)
     FetchContent_Declare(
@@ -21,6 +22,7 @@ else()
     )
     FetchContent_MakeAvailable(audio_codecs)
     set(AUDIO_CODECS_INCLUDE_DIR "${audio_codecs_SOURCE_DIR}/include")
+    set(AUDIO_CODECS_ROOT_DIR "${audio_codecs_SOURCE_DIR}")
 endif()
 
 # 2. libsoundio dependency
@@ -38,6 +40,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/native
     ${CMAKE_CURRENT_SOURCE_DIR}/node_modules/node-addon-api
     ${AUDIO_CODECS_INCLUDE_DIR}
+    ${AUDIO_CODECS_ROOT_DIR}
 )
 
 file(GLOB_RECURSE SOURCE_FILES "src/native/*.cpp")
@@ -53,6 +56,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     audio_codecs_flac
     audio_codecs_vorbis
     audio_codecs_aac
+    audio_codecs_spectrum
     audio_codecs_preview
     audio_codecs_tempo
 )
