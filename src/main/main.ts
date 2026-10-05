@@ -140,6 +140,45 @@ export function registerIpcHandlers() {
     return result;
   });
 
+  ipcMain.handle('audio:get-decoder-info', async () => {
+    const native = getNativeAddon();
+    return native.getDecoderInfo ? native.getDecoderInfo() : { addonVersion: '0.1.0', audioCodecsCommit: 'unknown', flacMaxBlockSize: 8192, flacMaxChannels: 2 };
+  });
+
+  ipcMain.handle('audio:invalidate-cache', async (_event, filePath: string, flatSidecar?: boolean) => {
+    const native = getNativeAddon();
+    return native.invalidateCache ? native.invalidateCache(filePath, !!flatSidecar) : true;
+  });
+
+  ipcMain.handle('audio:reanalyze-file', async (_event, filePath: string, flatSidecar?: boolean) => {
+    const native = getNativeAddon();
+    if (native.invalidateCache) {
+      native.invalidateCache(filePath, !!flatSidecar);
+    }
+    await new Promise<void>((resolve) => {
+      native.startBatchAnalysis([filePath], !!flatSidecar, (update: any) => {
+        if (update.status === 'cached' || update.status === 'error') {
+          resolve();
+        }
+      });
+    });
+    const raw = native.loadFileAnalysis(filePath, !!flatSidecar);
+    if (!raw) return null;
+    return {
+      filePath,
+      fileName: path.basename(filePath),
+      durationMs: raw.durationMs,
+      sampleRate: raw.sampleRate,
+      channels: raw.channels,
+      bpm: raw.bpm,
+      confidence: raw.confidence,
+      timeSignature: raw.timeSignature,
+      lods: raw.lods,
+      beatMarkers: raw.beats || raw.beatMarkers || [],
+      beats: raw.beats || raw.beatMarkers || [],
+    };
+  });
+
   ipcMain.handle('audio:playback-play', async (_event, filePath: string, startMs: number = 0) => {
     const native = getNativeAddon();
     return native.playbackPlay(filePath, startMs);

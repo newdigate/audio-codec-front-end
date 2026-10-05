@@ -61,6 +61,9 @@ export interface AudioApi {
   selectFolder: () => Promise<{ folderPath: string; files: AudioFileInfo[] } | null>;
   scanFolder: (folderPath: string) => Promise<AudioFileInfo[]>;
   loadFileAnalysis: (filePath: string, flatSidecar?: boolean) => Promise<FileAnalysisData | null>;
+  invalidateCache?: (filePath: string, flatSidecar?: boolean) => Promise<boolean>;
+  reanalyzeFile?: (filePath: string, flatSidecar?: boolean) => Promise<FileAnalysisData | null>;
+  getDecoderInfo?: () => Promise<{ addonVersion: string; audioCodecsCommit: string; flacMaxBlockSize: number; flacMaxChannels: number }>;
 
   // Batch Analysis Controls
   startBatchAnalysis: (folderPath: string, sidecarMode?: boolean) => Promise<void>;

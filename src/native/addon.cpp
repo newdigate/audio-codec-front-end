@@ -18,6 +18,40 @@ Napi::String GetVersion(const Napi::CallbackInfo& info) {
     return Napi::String::New(env, "0.1.0");
 }
 
+Napi::Value GetDecoderInfo(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("addonVersion", Napi::String::New(env, "0.1.0"));
+#ifdef AUDIO_CODECS_GIT_HASH
+    obj.Set("audioCodecsCommit", Napi::String::New(env, AUDIO_CODECS_GIT_HASH));
+#else
+    obj.Set("audioCodecsCommit", Napi::String::New(env, "unknown"));
+#endif
+    obj.Set("flacMaxBlockSize", Napi::Number::New(env, 8192));
+    obj.Set("flacMaxChannels", Napi::Number::New(env, 2));
+    return obj;
+}
+
+Napi::Value InvalidateCache(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "String expected for filePath").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    std::string filePath = info[0].As<Napi::String>().Utf8Value();
+    bool flatSidecar = false;
+    if (info.Length() >= 2 && info[1].IsBoolean()) {
+        flatSidecar = info[1].As<Napi::Boolean>().Value();
+    }
+
+    auto apvPath = audio_front_end::AnalysisCache::GetApvPath(filePath, flatSidecar);
+    auto attPath = audio_front_end::AnalysisCache::GetAttPath(filePath, flatSidecar);
+    std::error_code ec;
+    std::filesystem::remove(apvPath, ec);
+    std::filesystem::remove(attPath, ec);
+    return Napi::Boolean::New(env, true);
+}
+
 Napi::Value ScanFolder(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) {
@@ -321,6 +355,8 @@ Napi::Value PlaybackSetVolume(const Napi::CallbackInfo& info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getVersion", Napi::Function::New(env, GetVersion));
+    exports.Set("getDecoderInfo", Napi::Function::New(env, GetDecoderInfo));
+    exports.Set("invalidateCache", Napi::Function::New(env, InvalidateCache));
     exports.Set("scanFolder", Napi::Function::New(env, ScanFolder));
     exports.Set("startBatchAnalysis", Napi::Function::New(env, StartBatchAnalysis));
     exports.Set("controlBatchAnalysis", Napi::Function::New(env, ControlBatchAnalysis));

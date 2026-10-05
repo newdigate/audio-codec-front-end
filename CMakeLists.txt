@@ -25,6 +25,18 @@ else()
     set(AUDIO_CODECS_ROOT_DIR "${audio_codecs_SOURCE_DIR}")
 endif()
 
+execute_process(
+    COMMAND git -C "${AUDIO_CODECS_ROOT_DIR}" rev-parse --short HEAD
+    OUTPUT_VARIABLE AUDIO_CODECS_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT AUDIO_CODECS_GIT_HASH)
+    set(AUDIO_CODECS_GIT_HASH "unknown")
+endif()
+message(STATUS "Audio-codecs git commit: ${AUDIO_CODECS_GIT_HASH}")
+add_definitions(-DAUDIO_CODECS_GIT_HASH="${AUDIO_CODECS_GIT_HASH}")
+
 # 2. libsoundio dependency
 find_library(SOUNDIO_LIBRARY NAMES soundio PATHS /usr/local/lib /opt/homebrew/lib)
 find_path(SOUNDIO_INCLUDE_DIR NAMES soundio/soundio.h PATHS /usr/local/include /opt/homebrew/include)

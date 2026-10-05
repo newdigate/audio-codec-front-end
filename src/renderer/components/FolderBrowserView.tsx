@@ -165,6 +165,8 @@ export const FolderBrowserView: React.FC<FolderBrowserViewProps> = ({
     async (file: AudioFileInfo) => {
       if (onReanalyzeFile) {
         onReanalyzeFile(file);
+      } else if (window.audioApi?.reanalyzeFile) {
+        await window.audioApi.reanalyzeFile(file.filePath);
       } else if (window.audioApi?.loadFileAnalysis) {
         await window.audioApi.loadFileAnalysis(file.filePath);
       }

@@ -326,7 +326,7 @@ public:
                 return framesDecoded;
             }
             case CodecType::Flac: {
-                std::vector<int16_t> flacBuf(8192);
+                std::vector<int16_t> flacBuf(16384);
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
                     int samples = flacDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
                                                                 fileBuffer_.size() - currentOffset_,
@@ -528,8 +528,8 @@ public:
                 return framesDecoded;
             }
             case CodecType::Flac: {
-                std::vector<float> floatChunk(8192);
-                std::vector<float> stereoChunk(8192 * 2);
+                std::vector<float> floatChunk(16384);
+                std::vector<float> stereoChunk(16384);
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
                     int samples = flacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,

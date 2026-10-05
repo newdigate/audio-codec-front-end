@@ -20,6 +20,18 @@ export const audioApi: AudioApi = {
     return ipcRenderer.invoke('audio:load-analysis', filePath, flatSidecar);
   },
 
+  invalidateCache: (filePath: string, flatSidecar?: boolean): Promise<boolean> => {
+    return ipcRenderer.invoke('audio:invalidate-cache', filePath, flatSidecar);
+  },
+
+  reanalyzeFile: (filePath: string, flatSidecar?: boolean): Promise<FileAnalysisData | null> => {
+    return ipcRenderer.invoke('audio:reanalyze-file', filePath, flatSidecar);
+  },
+
+  getDecoderInfo: (): Promise<{ addonVersion: string; audioCodecsCommit: string; flacMaxBlockSize: number; flacMaxChannels: number }> => {
+    return ipcRenderer.invoke('audio:get-decoder-info');
+  },
+
   startBatchAnalysis: (folderPath: string, sidecarMode?: boolean): Promise<void> => {
     return ipcRenderer.invoke('audio:start-batch', folderPath, sidecarMode);
   },
