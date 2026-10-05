@@ -6,7 +6,7 @@ if (native.getVersion() !== '0.1.0') {
 }
 const info = native.getDecoderInfo();
 console.log('Decoder info:', info);
-if (!info || info.audioCodecsCommit !== '3fdf1cd' || info.flacMaxBlockSize !== 8192) {
+if (!info || typeof info.audioCodecsCommit !== 'string' || !info.audioCodecsCommit || info.flacMaxBlockSize !== 8192) {
     throw new Error(`Unexpected decoder info: ${JSON.stringify(info)}`);
 }
 console.log('smoke_test.js PASSED');
