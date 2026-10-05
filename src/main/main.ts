@@ -258,6 +258,9 @@ export function setMainWindow(win: BrowserWindow | null) {
 }
 
 if (process.type === 'browser') {
+  // Suppress harmless Chromium/ANGLE GPU diagnostic probing noise (e.g. eglQueryDeviceAttribEXT: Bad attribute)
+  app.commandLine.appendSwitch('log-level', '3');
+
   app.whenReady().then(() => {
     registerIpcHandlers();
     startPlaybackTicker();
