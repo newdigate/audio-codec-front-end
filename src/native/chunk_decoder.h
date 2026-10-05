@@ -211,6 +211,10 @@ public:
     }
 
     void Rewind() {
+        carryOverF32_.clear();
+        carryOverF32Offset_ = 0;
+        carryOverI16_.clear();
+        carryOverI16Offset_ = 0;
         currentOffset_ = dataStartOffset_;
         switch (codecType_) {
             case CodecType::Wav:
@@ -247,97 +251,160 @@ public:
     size_t DecodeChunkI16(int16_t* outPcm, size_t maxFrames) {
         if (!IsOpen() || maxFrames == 0 || channels_ == 0) return 0;
 
+        size_t framesDecoded = 0;
+
+        // Drain existing carry-over buffer first
+        if (carryOverI16Offset_ < carryOverI16_.size()) {
+            size_t availSamples = carryOverI16_.size() - carryOverI16Offset_;
+            size_t availFrames = availSamples / channels_;
+            size_t toTake = std::min(maxFrames, availFrames);
+            std::memcpy(outPcm, carryOverI16_.data() + carryOverI16Offset_, toTake * channels_ * sizeof(int16_t));
+            carryOverI16Offset_ += toTake * channels_;
+            framesDecoded += toTake;
+            if (carryOverI16Offset_ >= carryOverI16_.size()) {
+                carryOverI16_.clear();
+                carryOverI16Offset_ = 0;
+            }
+            if (framesDecoded >= maxFrames) {
+                return framesDecoded;
+            }
+        }
+
         switch (codecType_) {
             case CodecType::Wav: {
-                if (currentOffset_ >= fileBuffer_.size()) return 0;
-                int samples = wavDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
-                                                            fileBuffer_.size() - currentOffset_,
-                                                            outPcm, maxFrames * channels_);
-                if (samples <= 0) return 0;
-                currentOffset_ += wavDecoder_->get_last_frame_bytes();
-                return static_cast<size_t>(samples) / channels_;
+                while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
+                    int samples = wavDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
+                                                                fileBuffer_.size() - currentOffset_,
+                                                                outPcm + framesDecoded * channels_,
+                                                                (maxFrames - framesDecoded) * channels_);
+                    if (samples <= 0) break;
+                    currentOffset_ += wavDecoder_->get_last_frame_bytes();
+                    framesDecoded += static_cast<size_t>(samples) / channels_;
+                }
+                return framesDecoded;
             }
             case CodecType::Aiff: {
-                if (currentOffset_ >= fileBuffer_.size()) return 0;
-                int samples = aiffDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
-                                                             fileBuffer_.size() - currentOffset_,
-                                                             outPcm, maxFrames * channels_);
-                if (samples <= 0) return 0;
-                currentOffset_ += aiffDecoder_->get_last_frame_bytes();
-                return static_cast<size_t>(samples) / channels_;
+                while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
+                    int samples = aiffDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
+                                                                 fileBuffer_.size() - currentOffset_,
+                                                                 outPcm + framesDecoded * channels_,
+                                                                 (maxFrames - framesDecoded) * channels_);
+                    if (samples <= 0) break;
+                    currentOffset_ += aiffDecoder_->get_last_frame_bytes();
+                    framesDecoded += static_cast<size_t>(samples) / channels_;
+                }
+                return framesDecoded;
             }
             case CodecType::Mp3: {
-                size_t framesDecoded = 0;
                 float floatChunk[4608];
+                int16_t i16Chunk[4608];
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
                     int samples = mp3Decoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
                                                             floatChunk, 4608);
                     if (samples <= 0) break;
-                    size_t frames = static_cast<size_t>(samples) / channels_;
-                    for (int i = 0; i < samples; ++i) {
-                        int32_t val = static_cast<int32_t>(floatChunk[i] * 32767.0f);
-                        outPcm[framesDecoded * channels_ + i] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
-                    }
-                    framesDecoded += frames;
                     size_t advance = mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
-                    if (framesDecoded + (4608 / channels_) > maxFrames) break;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    for (int i = 0; i < samples; ++i) {
+                        int32_t val = static_cast<int32_t>(floatChunk[i] * 32767.0f);
+                        i16Chunk[i] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
+                    }
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outPcm + framesDecoded * channels_, i16Chunk, toCopy * channels_ * sizeof(int16_t));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverI16_.assign(i16Chunk + toCopy * channels_, i16Chunk + newFrames * channels_);
+                        carryOverI16Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
             case CodecType::Flac: {
-                size_t framesDecoded = 0;
+                std::vector<int16_t> flacBuf(8192);
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
-                    size_t maxSamples = (maxFrames - framesDecoded) * channels_;
                     int samples = flacDecoder_->decode_frame_i16(fileBuffer_.data() + currentOffset_,
                                                                 fileBuffer_.size() - currentOffset_,
-                                                                outPcm + framesDecoded * channels_,
-                                                                maxSamples);
+                                                                flacBuf.data(),
+                                                                flacBuf.size());
                     if (samples <= 0) break;
                     size_t advance = flacDecoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
-                    framesDecoded += static_cast<size_t>(samples) / channels_;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outPcm + framesDecoded * channels_, flacBuf.data(), toCopy * channels_ * sizeof(int16_t));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverI16_.assign(flacBuf.data() + toCopy * channels_, flacBuf.data() + newFrames * channels_);
+                        carryOverI16Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
             case CodecType::Vorbis: {
-                size_t framesDecoded = 0;
-                float floatChunk[4096];
+                float floatChunk[8192];
+                int16_t i16Chunk[8192];
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     size_t bytes = std::min<size_t>(512, fileBuffer_.size() - currentOffset_);
-                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk, 4096);
+                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk, 8192);
                     currentOffset_ += bytes;
-                    if (samples > 0) {
-                        for (int s = 0; s < samples; ++s) {
-                            int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
-                            outPcm[framesDecoded * channels_ + s] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
-                        }
-                        framesDecoded += static_cast<size_t>(samples) / channels_;
-                        if (framesDecoded + (4096 / channels_) > maxFrames) break;
+                    if (samples <= 0) continue;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) continue;
+                    for (int s = 0; s < samples; ++s) {
+                        int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
+                        i16Chunk[s] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
+                    }
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outPcm + framesDecoded * channels_, i16Chunk, toCopy * channels_ * sizeof(int16_t));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverI16_.assign(i16Chunk + toCopy * channels_, i16Chunk + newFrames * channels_);
+                        carryOverI16Offset_ = 0;
+                        break;
                     }
                 }
                 return framesDecoded;
             }
             case CodecType::Aac: {
-                size_t framesDecoded = 0;
-                float floatChunk[2048];
+                float floatChunk[4096];
+                int16_t i16Chunk[4096];
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     int samples = aacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
-                                                            floatChunk, 2048);
+                                                            floatChunk, 4096);
                     if (samples <= 0) break;
-                    for (int s = 0; s < samples; ++s) {
-                        int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
-                        outPcm[framesDecoded * channels_ + s] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
-                    }
-                    framesDecoded += static_cast<size_t>(samples) / channels_;
                     size_t frame_bytes = aacDecoder_->get_last_frame_bytes();
                     if (frame_bytes == 0) break;
                     currentOffset_ += frame_bytes + aacDecoder_->get_last_sync_offset();
-                    if (framesDecoded + (2048 / channels_) > maxFrames) break;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    for (int s = 0; s < samples; ++s) {
+                        int32_t val = static_cast<int32_t>(floatChunk[s] * 32767.0f);
+                        i16Chunk[s] = static_cast<int16_t>(std::clamp(val, -32768, 32767));
+                    }
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outPcm + framesDecoded * channels_, i16Chunk, toCopy * channels_ * sizeof(int16_t));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverI16_.assign(i16Chunk + toCopy * channels_, i16Chunk + newFrames * channels_);
+                        carryOverI16Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
@@ -349,150 +416,218 @@ public:
     size_t DecodeChunkF32Stereo(float* outStereoPcm, size_t maxFrames) {
         if (!IsOpen() || maxFrames == 0 || channels_ == 0) return 0;
 
+        size_t framesDecoded = 0;
+
+        // Drain existing carry-over buffer first
+        if (carryOverF32Offset_ < carryOverF32_.size()) {
+            size_t availSamples = carryOverF32_.size() - carryOverF32Offset_;
+            size_t availFrames = availSamples / 2; // Always stereo in carryOverF32_
+            size_t toTake = std::min(maxFrames, availFrames);
+            std::memcpy(outStereoPcm, carryOverF32_.data() + carryOverF32Offset_, toTake * 2 * sizeof(float));
+            carryOverF32Offset_ += toTake * 2;
+            framesDecoded += toTake;
+            if (carryOverF32Offset_ >= carryOverF32_.size()) {
+                carryOverF32_.clear();
+                carryOverF32Offset_ = 0;
+            }
+            if (framesDecoded >= maxFrames) {
+                return framesDecoded;
+            }
+        }
+
         switch (codecType_) {
             case CodecType::Wav: {
-                if (currentOffset_ >= fileBuffer_.size()) return 0;
-                if (channels_ == 1) {
-                    float monoBuf[2048];
-                    size_t framesToRead = std::min(maxFrames, static_cast<size_t>(2048));
-                    int samples = wavDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
-                                                                fileBuffer_.size() - currentOffset_,
-                                                                monoBuf, framesToRead);
-                    if (samples <= 0) return 0;
-                    currentOffset_ += wavDecoder_->get_last_frame_bytes();
-                    for (int i = 0; i < samples; ++i) {
-                        outStereoPcm[i * 2] = monoBuf[i];
-                        outStereoPcm[i * 2 + 1] = monoBuf[i];
+                while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
+                    size_t needed = maxFrames - framesDecoded;
+                    if (channels_ == 1) {
+                        float monoBuf[2048];
+                        size_t toRead = std::min(needed, static_cast<size_t>(2048));
+                        int samples = wavDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
+                                                                    fileBuffer_.size() - currentOffset_,
+                                                                    monoBuf, toRead);
+                        if (samples <= 0) break;
+                        currentOffset_ += wavDecoder_->get_last_frame_bytes();
+                        for (int i = 0; i < samples; ++i) {
+                            outStereoPcm[(framesDecoded + i) * 2] = monoBuf[i];
+                            outStereoPcm[(framesDecoded + i) * 2 + 1] = monoBuf[i];
+                        }
+                        framesDecoded += static_cast<size_t>(samples);
+                    } else {
+                        int samples = wavDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
+                                                                    fileBuffer_.size() - currentOffset_,
+                                                                    outStereoPcm + framesDecoded * 2,
+                                                                    needed * 2);
+                        if (samples <= 0) break;
+                        currentOffset_ += wavDecoder_->get_last_frame_bytes();
+                        framesDecoded += static_cast<size_t>(samples) / 2;
                     }
-                    return static_cast<size_t>(samples);
-                } else {
-                    int samples = wavDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
-                                                                fileBuffer_.size() - currentOffset_,
-                                                                outStereoPcm, maxFrames * 2);
-                    if (samples <= 0) return 0;
-                    currentOffset_ += wavDecoder_->get_last_frame_bytes();
-                    return static_cast<size_t>(samples) / 2;
                 }
+                return framesDecoded;
             }
             case CodecType::Aiff: {
-                if (currentOffset_ >= fileBuffer_.size()) return 0;
-                if (channels_ == 1) {
-                    float monoBuf[2048];
-                    size_t framesToRead = std::min(maxFrames, static_cast<size_t>(2048));
-                    int samples = aiffDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
-                                                                 fileBuffer_.size() - currentOffset_,
-                                                                 monoBuf, framesToRead);
-                    if (samples <= 0) return 0;
-                    currentOffset_ += aiffDecoder_->get_last_frame_bytes();
-                    for (int i = 0; i < samples; ++i) {
-                        outStereoPcm[i * 2] = monoBuf[i];
-                        outStereoPcm[i * 2 + 1] = monoBuf[i];
+                while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
+                    size_t needed = maxFrames - framesDecoded;
+                    if (channels_ == 1) {
+                        float monoBuf[2048];
+                        size_t toRead = std::min(needed, static_cast<size_t>(2048));
+                        int samples = aiffDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
+                                                                     fileBuffer_.size() - currentOffset_,
+                                                                     monoBuf, toRead);
+                        if (samples <= 0) break;
+                        currentOffset_ += aiffDecoder_->get_last_frame_bytes();
+                        for (int i = 0; i < samples; ++i) {
+                            outStereoPcm[(framesDecoded + i) * 2] = monoBuf[i];
+                            outStereoPcm[(framesDecoded + i) * 2 + 1] = monoBuf[i];
+                        }
+                        framesDecoded += static_cast<size_t>(samples);
+                    } else {
+                        int samples = aiffDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
+                                                                     fileBuffer_.size() - currentOffset_,
+                                                                     outStereoPcm + framesDecoded * 2,
+                                                                     needed * 2);
+                        if (samples <= 0) break;
+                        currentOffset_ += aiffDecoder_->get_last_frame_bytes();
+                        framesDecoded += static_cast<size_t>(samples) / 2;
                     }
-                    return static_cast<size_t>(samples);
-                } else {
-                    int samples = aiffDecoder_->decode_frame_f32(fileBuffer_.data() + currentOffset_,
-                                                                 fileBuffer_.size() - currentOffset_,
-                                                                 outStereoPcm, maxFrames * 2);
-                    if (samples <= 0) return 0;
-                    currentOffset_ += aiffDecoder_->get_last_frame_bytes();
-                    return static_cast<size_t>(samples) / 2;
                 }
+                return framesDecoded;
             }
             case CodecType::Mp3: {
-                size_t framesDecoded = 0;
                 float floatChunk[4608];
+                float stereoChunk[4608 * 2];
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
                     int samples = mp3Decoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
                                                             floatChunk, 4608);
                     if (samples <= 0) break;
-                    size_t frames = static_cast<size_t>(samples) / channels_;
-                    if (channels_ == 1) {
-                        for (size_t f = 0; f < frames; ++f) {
-                            outStereoPcm[(framesDecoded + f) * 2] = floatChunk[f];
-                            outStereoPcm[(framesDecoded + f) * 2 + 1] = floatChunk[f];
-                        }
-                    } else {
-                        std::memcpy(outStereoPcm + framesDecoded * 2, floatChunk, samples * sizeof(float));
-                    }
-                    framesDecoded += frames;
                     size_t advance = mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
-                    if (framesDecoded + (4608 / channels_) > maxFrames) break;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    if (channels_ == 1) {
+                        for (size_t f = 0; f < newFrames; ++f) {
+                            stereoChunk[f * 2] = floatChunk[f];
+                            stereoChunk[f * 2 + 1] = floatChunk[f];
+                        }
+                    } else {
+                        std::memcpy(stereoChunk, floatChunk, samples * sizeof(float));
+                    }
+
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk, toCopy * 2 * sizeof(float));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverF32_.assign(stereoChunk + toCopy * 2, stereoChunk + newFrames * 2);
+                        carryOverF32Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
             case CodecType::Flac: {
-                size_t framesDecoded = 0;
-                float floatChunk[8192];
+                std::vector<float> floatChunk(8192);
+                std::vector<float> stereoChunk(8192 * 2);
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
-                    size_t maxSamples = std::min<size_t>((maxFrames - framesDecoded) * channels_, 8192);
                     int samples = flacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
-                                                            floatChunk, maxSamples);
+                                                            floatChunk.data(),
+                                                            floatChunk.size());
                     if (samples <= 0) break;
-                    size_t frames = static_cast<size_t>(samples) / channels_;
-                    if (channels_ == 1) {
-                        for (size_t f = 0; f < frames; ++f) {
-                            outStereoPcm[(framesDecoded + f) * 2] = floatChunk[f];
-                            outStereoPcm[(framesDecoded + f) * 2 + 1] = floatChunk[f];
-                        }
-                    } else {
-                        std::memcpy(outStereoPcm + framesDecoded * 2, floatChunk, samples * sizeof(float));
-                    }
-                    framesDecoded += frames;
                     size_t advance = flacDecoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    if (channels_ == 1) {
+                        for (size_t f = 0; f < newFrames; ++f) {
+                            stereoChunk[f * 2] = floatChunk[f];
+                            stereoChunk[f * 2 + 1] = floatChunk[f];
+                        }
+                    } else {
+                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                    }
+
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
             case CodecType::Vorbis: {
-                size_t framesDecoded = 0;
-                float floatChunk[4096];
+                std::vector<float> floatChunk(8192);
+                std::vector<float> stereoChunk(8192 * 2);
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     size_t bytes = std::min<size_t>(512, fileBuffer_.size() - currentOffset_);
-                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk, 4096);
+                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk.data(), floatChunk.size());
                     currentOffset_ += bytes;
-                    if (samples > 0) {
-                        size_t frames = static_cast<size_t>(samples) / channels_;
-                        if (channels_ == 1) {
-                            for (size_t f = 0; f < frames; ++f) {
-                                outStereoPcm[(framesDecoded + f) * 2] = floatChunk[f];
-                                outStereoPcm[(framesDecoded + f) * 2 + 1] = floatChunk[f];
-                            }
-                        } else {
-                            std::memcpy(outStereoPcm + framesDecoded * 2, floatChunk, samples * sizeof(float));
+                    if (samples <= 0) continue;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) continue;
+                    if (channels_ == 1) {
+                        for (size_t f = 0; f < newFrames; ++f) {
+                            stereoChunk[f * 2] = floatChunk[f];
+                            stereoChunk[f * 2 + 1] = floatChunk[f];
                         }
-                        framesDecoded += frames;
-                        if (framesDecoded + (4096 / channels_) > maxFrames) break;
+                    } else {
+                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                    }
+
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32Offset_ = 0;
+                        break;
                     }
                 }
                 return framesDecoded;
             }
             case CodecType::Aac: {
-                size_t framesDecoded = 0;
-                float floatChunk[2048];
+                std::vector<float> floatChunk(4096);
+                std::vector<float> stereoChunk(4096 * 2);
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     int samples = aacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
-                                                            floatChunk, 2048);
+                                                            floatChunk.data(),
+                                                            floatChunk.size());
                     if (samples <= 0) break;
-                    size_t frames = static_cast<size_t>(samples) / channels_;
-                    if (channels_ == 1) {
-                        for (size_t f = 0; f < frames; ++f) {
-                            outStereoPcm[(framesDecoded + f) * 2] = floatChunk[f];
-                            outStereoPcm[(framesDecoded + f) * 2 + 1] = floatChunk[f];
-                        }
-                    } else {
-                        std::memcpy(outStereoPcm + framesDecoded * 2, floatChunk, samples * sizeof(float));
-                    }
-                    framesDecoded += frames;
                     size_t frame_bytes = aacDecoder_->get_last_frame_bytes();
                     if (frame_bytes == 0) break;
                     currentOffset_ += frame_bytes + aacDecoder_->get_last_sync_offset();
-                    if (framesDecoded + (2048 / channels_) > maxFrames) break;
+
+                    size_t newFrames = static_cast<size_t>(samples) / channels_;
+                    if (newFrames == 0) break;
+                    if (channels_ == 1) {
+                        for (size_t f = 0; f < newFrames; ++f) {
+                            stereoChunk[f * 2] = floatChunk[f];
+                            stereoChunk[f * 2 + 1] = floatChunk[f];
+                        }
+                    } else {
+                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                    }
+
+                    size_t needed = maxFrames - framesDecoded;
+                    size_t toCopy = std::min(newFrames, needed);
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    framesDecoded += toCopy;
+                    if (newFrames > toCopy) {
+                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32Offset_ = 0;
+                        break;
+                    }
                 }
                 return framesDecoded;
             }
@@ -506,6 +641,10 @@ public:
         if (targetFrame < 0) targetFrame = 0;
 
         if (codecType_ == CodecType::Wav && wavDecoder_) {
+            carryOverF32_.clear();
+            carryOverF32Offset_ = 0;
+            carryOverI16_.clear();
+            carryOverI16Offset_ = 0;
             size_t bps = (wavDecoder_->get_bit_depth() > 0) ? (wavDecoder_->get_bit_depth() / 8) : 2;
             size_t frameBytes = channels_ * bps;
             currentOffset_ = dataStartOffset_ + static_cast<size_t>(targetFrame) * frameBytes;
@@ -514,6 +653,10 @@ public:
         }
 
         if (codecType_ == CodecType::Aiff && aiffDecoder_) {
+            carryOverF32_.clear();
+            carryOverF32Offset_ = 0;
+            carryOverI16_.clear();
+            carryOverI16Offset_ = 0;
             size_t bps = (aiffDecoder_->get_bit_depth() > 0) ? (aiffDecoder_->get_bit_depth() / 8) : 2;
             size_t frameBytes = channels_ * bps;
             currentOffset_ = dataStartOffset_ + static_cast<size_t>(targetFrame) * frameBytes;
@@ -525,12 +668,12 @@ public:
         Rewind();
         if (targetFrame > 0) {
             int64_t skipped = 0;
-            float dummy[2048];
+            std::vector<float> discardBuf(8192 * 2);
             while (skipped < targetFrame) {
-                size_t toSkip = std::min<size_t>(static_cast<size_t>(targetFrame - skipped), 1024);
-                size_t decoded = DecodeChunkF32Stereo(dummy, toSkip);
+                size_t toSkip = std::min<size_t>(static_cast<size_t>(targetFrame - skipped), 8192);
+                size_t decoded = DecodeChunkF32Stereo(discardBuf.data(), toSkip);
                 if (decoded == 0) break;
-                skipped += decoded;
+                skipped += static_cast<int64_t>(decoded);
             }
         }
         return true;
@@ -556,6 +699,10 @@ private:
         dataStartOffset_ = 0;
         currentOffset_ = 0;
         fileBuffer_.clear();
+        carryOverF32_.clear();
+        carryOverF32Offset_ = 0;
+        carryOverI16_.clear();
+        carryOverI16Offset_ = 0;
         wavDecoder_.reset();
         aiffDecoder_.reset();
         mp3Decoder_.reset();
@@ -572,6 +719,11 @@ private:
     size_t dataStartOffset_{0};
     size_t currentOffset_{0};
     std::vector<uint8_t> fileBuffer_;
+
+    std::vector<float> carryOverF32_;
+    size_t carryOverF32Offset_{0};
+    std::vector<int16_t> carryOverI16_;
+    size_t carryOverI16Offset_{0};
 
     std::unique_ptr<audio_codecs::wav::WavDecoder> wavDecoder_;
     std::unique_ptr<audio_codecs::aiff::AiffDecoder> aiffDecoder_;

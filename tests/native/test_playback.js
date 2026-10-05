@@ -118,8 +118,34 @@ setTimeout(() => {
                             assert.strictEqual(immStopPos.isPlaying, false, 'Should be stopped after immediate Play + Stop');
                             assert.strictEqual(immStopPos.currentMs, 0, 'Position should remain at 0ms');
 
-                            console.log('All playback & concurrency assertions PASSED successfully!');
-                            process.exit(0);
+                            // 12. Compressed Format Seek & Playback (MP3)
+                            const testMp3Path = path.join(fixturesDir, 'test.mp3');
+                            if (fs.existsSync(testMp3Path)) {
+                                console.log('Testing MP3 playback and seek (compressed stream fast-forward)...');
+                                native.playbackPlay(testMp3Path, 300);
+                                setTimeout(() => {
+                                    const mp3Pos = native.playbackGetPosition();
+                                    console.log('Position after MP3 play with 300ms seek:', mp3Pos);
+                                    assert.strictEqual(mp3Pos.isPlaying, true, 'MP3 should be playing');
+                                    assert(mp3Pos.currentMs >= 300, `MP3 position should be >= 300ms, got ${mp3Pos.currentMs}`);
+
+                                    native.playbackSeek(700);
+                                    setTimeout(() => {
+                                        const mp3SeekPos = native.playbackGetPosition();
+                                        console.log('Position after MP3 seek to 700ms:', mp3SeekPos);
+                                        assert.strictEqual(mp3SeekPos.isPlaying, true, 'MP3 should still be playing');
+                                        assert(mp3SeekPos.currentMs >= 650, `MP3 position should be >= 650ms, got ${mp3SeekPos.currentMs}`);
+                                        native.playbackStop();
+                                        console.log('MP3 playback & seek test passed!');
+
+                                        console.log('All playback & concurrency assertions PASSED successfully!');
+                                        process.exit(0);
+                                    }, 200);
+                                }, 200);
+                            } else {
+                                console.log('All playback & concurrency assertions PASSED successfully!');
+                                process.exit(0);
+                            }
                         }, 150);
                     }, 150);
                 }, 150);

@@ -50,7 +50,7 @@ native.startBatchAnalysis(fixturesDir, false, (progress) => {
     assert(typeof progress.bpm === 'number', 'bpm must be number');
     assert(typeof progress.status === 'string', 'status must be string');
 
-    if (progress.status === 'cached' && progress.progressPct === 100) {
+    if (progress.status === 'cached' && progress.progressPct === 100 && progress.filePath.endsWith('test.wav')) {
         cachedReported = true;
         assert.strictEqual(Math.round(progress.bpm), 120, 'BPM should be ~120');
         assert(progress.durationMs > 0, 'durationMs should be > 0');
