@@ -17,6 +17,8 @@ namespace audio_front_end {
 struct PlaybackPosition {
     bool isPlaying{false};
     double currentMs{0.0};
+    uint64_t underflowCount{0};
+    size_t bufferedFrames{0};
 };
 
 enum class DecoderCommandType {
@@ -81,6 +83,8 @@ private:
     std::atomic<int64_t> totalFrames_{0};
     std::atomic<uint32_t> sampleRate_{44100};
     std::atomic<float> volume_{1.0f};
+    std::atomic<uint64_t> underflowCount_{0};
+    std::atomic<uint64_t> silenceFramesWritten_{0};
 
     // Lock-free ring buffer (stereo floats)
     // Exclusively written by decoderThread_, read by SoundIo audio callback

@@ -302,7 +302,13 @@ public:
                     int samples = mp3Decoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
                                                             floatChunk, 4608);
-                    if (samples <= 0) break;
+                    if (samples <= 0) {
+                        if (samples == -3 && (mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes() > 0)) {
+                            currentOffset_ += mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
+                            continue;
+                        }
+                        break;
+                    }
                     size_t advance = mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
@@ -499,7 +505,14 @@ public:
                     int samples = mp3Decoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
                                                             floatChunk, 4608);
-                    if (samples <= 0) break;
+                    if (samples <= 0) {
+                        if (samples == -3 && (mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes() > 0)) {
+                            // Bit reservoir underflow on transition frame: advance and continue
+                            currentOffset_ += mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
+                            continue;
+                        }
+                        break;
+                    }
                     size_t advance = mp3Decoder_->get_last_sync_offset() + mp3Decoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
                     currentOffset_ += advance;
@@ -681,6 +694,12 @@ public:
 
     bool IsOpen() const {
         return codecType_ != CodecType::Unknown && !fileBuffer_.empty();
+    }
+
+    bool IsEof() const {
+        return currentOffset_ >= fileBuffer_.size() &&
+               carryOverF32Offset_ >= carryOverF32_.size() &&
+               carryOverI16Offset_ >= carryOverI16_.size();
     }
 
     uint32_t GetSampleRate() const { return sampleRate_; }

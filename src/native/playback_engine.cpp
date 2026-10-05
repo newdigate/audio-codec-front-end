@@ -114,7 +114,11 @@ void AudioPlaybackEngine::OnWriteCallback(SoundIoOutStream* stream, int frame_co
     }
 }
 
-void AudioPlaybackEngine::OnUnderflowCallback(SoundIoOutStream* /*stream*/) {
+void AudioPlaybackEngine::OnUnderflowCallback(SoundIoOutStream* stream) {
+    auto* self = static_cast<AudioPlaybackEngine*>(stream->userdata);
+    if (self) {
+        self->underflowCount_.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void AudioPlaybackEngine::OnErrorCallback(SoundIoOutStream* /*stream*/, int /*err*/) {
@@ -170,6 +174,15 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
         size_t availFrames = availSamples / 2;
         size_t framesFromRing = std::min<size_t>(frame_count, availFrames);
 
+        int64_t total = totalFrames_.load(std::memory_order_relaxed);
+        int64_t cur = currentFrame_.load(std::memory_order_relaxed);
+        bool isEof = (total > 0 && cur + static_cast<int64_t>(framesFromRing) >= total);
+
+        if (!isEof && framesFromRing < static_cast<size_t>(frame_count)) {
+            underflowCount_.fetch_add(1, std::memory_order_relaxed);
+            silenceFramesWritten_.fetch_add(frame_count - framesFromRing, std::memory_order_relaxed);
+        }
+
         size_t framesProcessed = 0;
         while (framesProcessed < framesFromRing) {
             size_t chunk = std::min<size_t>(framesFromRing - framesProcessed, 1024);
@@ -199,7 +212,6 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
         soundio_outstream_end_write(stream);
 
         currentFrame_.fetch_add(framesFromRing, std::memory_order_relaxed);
-        int64_t total = totalFrames_.load(std::memory_order_relaxed);
         if (total > 0 && currentFrame_.load(std::memory_order_relaxed) >= total) {
             isPlaying_.store(false, std::memory_order_release);
         }
@@ -252,15 +264,23 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
     currentDecodedFrame_ = targetFrame;
     currentFrame_.store(targetFrame, std::memory_order_release);
 
-    // Pre-fill ring buffer from new position (only this decoder thread writes to ring buffer)
-    size_t availWrite = ringBuffer_.availableWrite();
-    size_t framesToFill = std::min<size_t>(availWrite / 2, 8192);
-    if (framesToFill > 0) {
+    // Pre-fill ring buffer aggressively: decode up to 65536 frames (~1.5s at 44.1kHz)
+    // or until EOF so CoreAudio never encounters an initial underrun on playback start or seek.
+    while (ringBuffer_.availableWrite() >= 4096) {
+        size_t availWrite = ringBuffer_.availableWrite();
+        size_t framesToFill = std::min<size_t>(availWrite / 2, 8192);
         float stackBuf[16384];
         size_t decoded = streamDecoder_.DecodeChunkF32Stereo(stackBuf, framesToFill);
-        if (decoded > 0) {
-            ringBuffer_.write(stackBuf, decoded * 2);
-            currentDecodedFrame_ = targetFrame + static_cast<int64_t>(decoded);
+        if (decoded == 0) {
+            if (streamDecoder_.IsEof()) {
+                totalFrames_.store(currentDecodedFrame_, std::memory_order_release);
+            }
+            break;
+        }
+        ringBuffer_.write(stackBuf, decoded * 2);
+        currentDecodedFrame_ += static_cast<int64_t>(decoded);
+        if (ringBuffer_.availableRead() / 2 >= 65536) {
+            break; // ~1.5 seconds of buffered audio achieved
         }
     }
 }
@@ -336,29 +356,35 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
         bool playing = isPlaying_.load(std::memory_order_acquire);
         bool paused = isPaused_.load(std::memory_order_acquire);
 
-        // Streaming PCM floats on-demand into ring buffer ahead of playhead
-        if (playing && !paused) {
+        // Streaming PCM floats on-demand into ring buffer ahead of playhead:
+        // Continually decode and top up the ring buffer while free space exists (maintain ~3 sec buffer cushion).
+        while (playing && !paused && !stopDecoder_.load(std::memory_order_relaxed)) {
             size_t availWrite = ringBuffer_.availableWrite();
-            if (availWrite >= 2048) {
-                size_t framesToDecode = std::min<size_t>(availWrite / 2, 4096);
-                float stackBuf[8192];
-                size_t decoded = streamDecoder_.DecodeChunkF32Stereo(stackBuf, framesToDecode);
-                if (decoded > 0) {
-                    ringBuffer_.write(stackBuf, decoded * 2);
-                    currentDecodedFrame_ += static_cast<int64_t>(decoded);
-                } else {
+            // If ring buffer has less than 4096 samples free (<2048 frames headroom), it is effectively full
+            if (availWrite < 4096) {
+                break;
+            }
+            size_t framesToDecode = std::min<size_t>(availWrite / 2, 8192);
+            float stackBuf[16384];
+            size_t decoded = streamDecoder_.DecodeChunkF32Stereo(stackBuf, framesToDecode);
+            if (decoded > 0) {
+                ringBuffer_.write(stackBuf, decoded * 2);
+                currentDecodedFrame_ += static_cast<int64_t>(decoded);
+            } else {
+                if (streamDecoder_.IsEof()) {
                     totalFrames_.store(currentDecodedFrame_, std::memory_order_release);
                 }
+                break;
             }
         }
 
         std::unique_lock<std::mutex> lock(commandMutex_);
-        decoderCv_.wait_for(lock, std::chrono::milliseconds(5), [&] {
+        decoderCv_.wait_for(lock, std::chrono::milliseconds(10), [&] {
             return stopDecoder_.load(std::memory_order_relaxed) ||
                    !commandQueue_.empty() ||
                    (isPlaying_.load(std::memory_order_relaxed) &&
                     !isPaused_.load(std::memory_order_relaxed) &&
-                    ringBuffer_.availableWrite() >= 2048);
+                    ringBuffer_.availableWrite() >= 8192);
         });
     }
 }
@@ -389,8 +415,6 @@ bool AudioPlaybackEngine::Play(const std::string& filePath, double startOffsetMs
     if (rate == 0) rate = 44100;
     int64_t targetFrame = static_cast<int64_t>((startOffsetMs * static_cast<double>(rate)) / 1000.0);
     currentFrame_.store(targetFrame, std::memory_order_release);
-    isPlaying_.store(true, std::memory_order_release);
-    isPaused_.store(false, std::memory_order_release);
 
     {
         std::lock_guard<std::mutex> lock(commandMutex_);
@@ -485,6 +509,8 @@ PlaybackPosition AudioPlaybackEngine::GetPosition() const {
     if (total > 0 && frame > total) frame = total;
     if (frame < 0) frame = 0;
     pos.currentMs = (static_cast<double>(frame) * 1000.0) / static_cast<double>(rate);
+    pos.underflowCount = underflowCount_.load(std::memory_order_relaxed);
+    pos.bufferedFrames = ringBuffer_.availableRead() / 2;
     return pos;
 }
 

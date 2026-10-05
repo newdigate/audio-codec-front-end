@@ -337,6 +337,8 @@ Napi::Value PlaybackGetPosition(const Napi::CallbackInfo& info) {
     Napi::Object obj = Napi::Object::New(env);
     obj.Set("isPlaying", Napi::Boolean::New(env, pos.isPlaying));
     obj.Set("currentMs", Napi::Number::New(env, pos.currentMs));
+    obj.Set("underflowCount", Napi::Number::New(env, static_cast<double>(pos.underflowCount)));
+    obj.Set("bufferedFrames", Napi::Number::New(env, static_cast<double>(pos.bufferedFrames)));
     return obj;
 }
 
