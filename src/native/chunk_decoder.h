@@ -541,13 +541,13 @@ public:
                 return framesDecoded;
             }
             case CodecType::Flac: {
-                std::vector<float> floatChunk(16384);
-                std::vector<float> stereoChunk(16384);
+                float* floatChunk = scratchF32Chunk_.data();
+                float* stereoChunk = scratchStereoChunk_.data();
                 while (framesDecoded < maxFrames && currentOffset_ + 4 <= fileBuffer_.size()) {
                     int samples = flacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
-                                                            floatChunk.data(),
-                                                            floatChunk.size());
+                                                            floatChunk,
+                                                            16384);
                     if (samples <= 0) break;
                     size_t advance = flacDecoder_->get_last_frame_bytes();
                     if (advance == 0) advance = 4;
@@ -561,15 +561,15 @@ public:
                             stereoChunk[f * 2 + 1] = floatChunk[f];
                         }
                     } else {
-                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                        std::memcpy(stereoChunk, floatChunk, samples * sizeof(float));
                     }
 
                     size_t needed = maxFrames - framesDecoded;
                     size_t toCopy = std::min(newFrames, needed);
-                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk, toCopy * 2 * sizeof(float));
                     framesDecoded += toCopy;
                     if (newFrames > toCopy) {
-                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32_.assign(stereoChunk + toCopy * 2, stereoChunk + newFrames * 2);
                         carryOverF32Offset_ = 0;
                         break;
                     }
@@ -577,11 +577,11 @@ public:
                 return framesDecoded;
             }
             case CodecType::Vorbis: {
-                std::vector<float> floatChunk(8192);
-                std::vector<float> stereoChunk(8192 * 2);
+                float* floatChunk = scratchF32Chunk_.data();
+                float* stereoChunk = scratchStereoChunk_.data();
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     size_t bytes = std::min<size_t>(512, fileBuffer_.size() - currentOffset_);
-                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk.data(), floatChunk.size());
+                    int samples = vorbisDecoder_->decode_frame(fileBuffer_.data() + currentOffset_, bytes, floatChunk, 8192);
                     currentOffset_ += bytes;
                     if (samples <= 0) continue;
 
@@ -593,15 +593,15 @@ public:
                             stereoChunk[f * 2 + 1] = floatChunk[f];
                         }
                     } else {
-                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                        std::memcpy(stereoChunk, floatChunk, samples * sizeof(float));
                     }
 
                     size_t needed = maxFrames - framesDecoded;
                     size_t toCopy = std::min(newFrames, needed);
-                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk, toCopy * 2 * sizeof(float));
                     framesDecoded += toCopy;
                     if (newFrames > toCopy) {
-                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32_.assign(stereoChunk + toCopy * 2, stereoChunk + newFrames * 2);
                         carryOverF32Offset_ = 0;
                         break;
                     }
@@ -609,13 +609,13 @@ public:
                 return framesDecoded;
             }
             case CodecType::Aac: {
-                std::vector<float> floatChunk(4096);
-                std::vector<float> stereoChunk(4096 * 2);
+                float* floatChunk = scratchF32Chunk_.data();
+                float* stereoChunk = scratchStereoChunk_.data();
                 while (framesDecoded < maxFrames && currentOffset_ < fileBuffer_.size()) {
                     int samples = aacDecoder_->decode_frame(fileBuffer_.data() + currentOffset_,
                                                             fileBuffer_.size() - currentOffset_,
-                                                            floatChunk.data(),
-                                                            floatChunk.size());
+                                                            floatChunk,
+                                                            4096);
                     if (samples <= 0) break;
                     size_t frame_bytes = aacDecoder_->get_last_frame_bytes();
                     if (frame_bytes == 0) break;
@@ -629,15 +629,15 @@ public:
                             stereoChunk[f * 2 + 1] = floatChunk[f];
                         }
                     } else {
-                        std::memcpy(stereoChunk.data(), floatChunk.data(), samples * sizeof(float));
+                        std::memcpy(stereoChunk, floatChunk, samples * sizeof(float));
                     }
 
                     size_t needed = maxFrames - framesDecoded;
                     size_t toCopy = std::min(newFrames, needed);
-                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk.data(), toCopy * 2 * sizeof(float));
+                    std::memcpy(outStereoPcm + framesDecoded * 2, stereoChunk, toCopy * 2 * sizeof(float));
                     framesDecoded += toCopy;
                     if (newFrames > toCopy) {
-                        carryOverF32_.assign(stereoChunk.data() + toCopy * 2, stereoChunk.data() + newFrames * 2);
+                        carryOverF32_.assign(stereoChunk + toCopy * 2, stereoChunk + newFrames * 2);
                         carryOverF32Offset_ = 0;
                         break;
                     }
@@ -681,10 +681,10 @@ public:
         Rewind();
         if (targetFrame > 0) {
             int64_t skipped = 0;
-            std::vector<float> discardBuf(8192 * 2);
+            float discardBuf[8192]; // 4096 stereo frames on stack (no overlap with decoder scratch buffers)
             while (skipped < targetFrame) {
-                size_t toSkip = std::min<size_t>(static_cast<size_t>(targetFrame - skipped), 8192);
-                size_t decoded = DecodeChunkF32Stereo(discardBuf.data(), toSkip);
+                size_t toSkip = std::min<size_t>(static_cast<size_t>(targetFrame - skipped), 4096);
+                size_t decoded = DecodeChunkF32Stereo(discardBuf, toSkip);
                 if (decoded == 0) break;
                 skipped += static_cast<int64_t>(decoded);
             }
@@ -743,6 +743,10 @@ private:
     size_t carryOverF32Offset_{0};
     std::vector<int16_t> carryOverI16_;
     size_t carryOverI16Offset_{0};
+
+    // Persistent scratch buffers to avoid dynamic heap allocation during chunk decoding
+    std::vector<float> scratchF32Chunk_{16384};
+    std::vector<float> scratchStereoChunk_{32768};
 
     std::unique_ptr<audio_codecs::wav::WavDecoder> wavDecoder_;
     std::unique_ptr<audio_codecs::aiff::AiffDecoder> aiffDecoder_;

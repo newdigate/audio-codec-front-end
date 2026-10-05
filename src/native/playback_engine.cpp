@@ -72,7 +72,14 @@ bool AudioPlaybackEngine::OpenStream(int sampleRate) {
     outstream_->format = SoundIoFormatFloat32NE;
     outstream_->sample_rate = sampleRate;
     outstream_->layout = *soundio_channel_layout_get_default(2);
-    outstream_->software_latency = 0.05; // 50ms latency
+    double targetLatency = 0.10; // ~100ms latency cushion for rock-solid playback
+    if (device_->software_latency_max > 0.0) {
+        targetLatency = std::min(targetLatency, device_->software_latency_max);
+    }
+    if (device_->software_latency_min > 0.0) {
+        targetLatency = std::max(targetLatency, device_->software_latency_min);
+    }
+    outstream_->software_latency = targetLatency;
     outstream_->userdata = this;
     outstream_->write_callback = &AudioPlaybackEngine::OnWriteCallback;
     outstream_->underflow_callback = &AudioPlaybackEngine::OnUnderflowCallback;
@@ -184,6 +191,12 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
         }
 
         size_t framesProcessed = 0;
+        int numChannels = stream->layout.channel_count;
+        char* leftBase = areas[0].ptr;
+        int leftStep = areas[0].step;
+        char* rightBase = (numChannels > 1) ? areas[1].ptr : nullptr;
+        int rightStep = (numChannels > 1) ? areas[1].step : 0;
+
         while (framesProcessed < framesFromRing) {
             size_t chunk = std::min<size_t>(framesFromRing - framesProcessed, 1024);
             float stackBuf[2048]; // 1024 stereo frames on stack (zero heap allocation)
@@ -193,9 +206,12 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
                 size_t outFrameIdx = framesProcessed + f;
                 float left = stackBuf[f * 2] * vol;
                 float right = stackBuf[f * 2 + 1] * vol;
-                for (int ch = 0; ch < stream->layout.channel_count; ++ch) {
-                    float* ptr = reinterpret_cast<float*>(areas[ch].ptr + areas[ch].step * outFrameIdx);
-                    *ptr = (ch == 0) ? left : ((ch == 1) ? right : 0.0f);
+                *reinterpret_cast<float*>(leftBase + leftStep * outFrameIdx) = left;
+                if (rightBase) {
+                    *reinterpret_cast<float*>(rightBase + rightStep * outFrameIdx) = right;
+                }
+                for (int ch = 2; ch < numChannels; ++ch) {
+                    *reinterpret_cast<float*>(areas[ch].ptr + areas[ch].step * outFrameIdx) = 0.0f;
                 }
             }
             framesProcessed += chunk;
@@ -203,9 +219,12 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
 
         // Fill remaining requested frames with silence
         for (size_t f = framesFromRing; f < static_cast<size_t>(frame_count); ++f) {
-            for (int ch = 0; ch < stream->layout.channel_count; ++ch) {
-                float* ptr = reinterpret_cast<float*>(areas[ch].ptr + areas[ch].step * f);
-                *ptr = 0.0f;
+            *reinterpret_cast<float*>(leftBase + leftStep * f) = 0.0f;
+            if (rightBase) {
+                *reinterpret_cast<float*>(rightBase + rightStep * f) = 0.0f;
+            }
+            for (int ch = 2; ch < numChannels; ++ch) {
+                *reinterpret_cast<float*>(areas[ch].ptr + areas[ch].step * f) = 0.0f;
             }
         }
 
@@ -225,8 +244,6 @@ void AudioPlaybackEngine::HandleAudioWrite(SoundIoOutStream* stream, int /*frame
     if (frames_left > 0) {
         WriteSilence(stream, frames_left);
     }
-
-    decoderCv_.notify_one();
 }
 
 void AudioPlaybackEngine::StopDecoder() {
@@ -249,9 +266,9 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
     if (isActivelyStreaming_.load(std::memory_order_relaxed)) {
         flushAck_.store(false, std::memory_order_release);
         flushRequested_.store(true, std::memory_order_release);
-        // Wait for audio callback to acknowledge discard (up to 30ms)
+        // Wait for audio callback to acknowledge discard (up to 200ms for ~100ms hardware latency)
         int waitCount = 0;
-        while (!flushAck_.load(std::memory_order_acquire) && waitCount < 60) {
+        while (!flushAck_.load(std::memory_order_acquire) && waitCount < 400) {
             std::this_thread::sleep_for(std::chrono::microseconds(500));
             waitCount++;
         }
@@ -264,7 +281,7 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
     currentDecodedFrame_ = targetFrame;
     currentFrame_.store(targetFrame, std::memory_order_release);
 
-    // Pre-fill ring buffer aggressively: decode up to 65536 frames (~1.5s at 44.1kHz)
+    // Pre-fill ring buffer aggressively: decode up to 65536 frames
     // or until EOF so CoreAudio never encounters an initial underrun on playback start or seek.
     while (ringBuffer_.availableWrite() >= 4096) {
         size_t availWrite = ringBuffer_.availableWrite();
@@ -280,7 +297,7 @@ void AudioPlaybackEngine::ExecuteSeek(int64_t targetFrame) {
         ringBuffer_.write(stackBuf, decoded * 2);
         currentDecodedFrame_ += static_cast<int64_t>(decoded);
         if (ringBuffer_.availableRead() / 2 >= 65536) {
-            break; // ~1.5 seconds of buffered audio achieved
+            break;
         }
     }
 }
@@ -295,6 +312,19 @@ void AudioPlaybackEngine::DecoderThreadLoop() {
                 if (commandQueue_.empty()) break;
                 cmd = commandQueue_.front();
                 commandQueue_.pop();
+
+                // Coalesce rapid consecutive seek commands or immediate seek after LoadAndPlay
+                if (cmd.type == DecoderCommandType::LoadAndPlay) {
+                    if (!commandQueue_.empty() && commandQueue_.front().type == DecoderCommandType::Seek) {
+                        cmd.offsetMs = commandQueue_.front().offsetMs;
+                        commandQueue_.pop();
+                    }
+                } else if (cmd.type == DecoderCommandType::Seek) {
+                    while (!commandQueue_.empty() && commandQueue_.front().type == DecoderCommandType::Seek) {
+                        cmd = commandQueue_.front();
+                        commandQueue_.pop();
+                    }
+                }
             }
 
             if (cmd.type == DecoderCommandType::LoadAndPlay) {

@@ -88,7 +88,7 @@ private:
 
     // Lock-free ring buffer (stereo floats)
     // Exclusively written by decoderThread_, read by SoundIo audio callback
-    SpscRingBuffer<float> ringBuffer_{262144};
+    SpscRingBuffer<float> ringBuffer_{524288};
 
     // Decoder background thread and FIFO command queue
     std::thread decoderThread_;
