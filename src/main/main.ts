@@ -20,12 +20,15 @@ export function getNativeAddon() {
     return nativeAddon;
   } catch {
     const candidates = [
+      process.resourcesPath ? path.join(process.resourcesPath, 'build/Release/audio_native.node') : '',
+      process.resourcesPath ? path.join(process.resourcesPath, 'app.asar.unpacked/build/Release/audio_native.node') : '',
+      process.resourcesPath ? path.join(process.resourcesPath, 'audio_native.node') : '',
       path.join(__dirname, '../../build/Release/audio_native.node'),
       path.join(__dirname, '../build/Release/audio_native.node'),
       path.join(__dirname, 'audio_native.node'),
       path.join(app.getAppPath ? app.getAppPath() : process.cwd(), 'build/Release/audio_native.node'),
       path.join(process.cwd(), 'build/Release/audio_native.node'),
-    ];
+    ].filter(Boolean);
     for (const candidate of candidates) {
       if (fs.existsSync(candidate)) {
         nativeAddon = require(candidate);
@@ -202,6 +205,7 @@ export function createWindow(): BrowserWindow {
     path.join(__dirname, 'preload.js'),
     path.join(__dirname, '../preload/preload.js'),
     path.join(__dirname, '../dist-electron/preload.js'),
+    path.join(app.getAppPath ? app.getAppPath() : process.cwd(), 'dist-electron/preload.js'),
   ];
   const preloadPath = preloadCandidates.find(p => fs.existsSync(p)) || path.join(__dirname, 'preload.js');
 
@@ -222,11 +226,19 @@ export function createWindow(): BrowserWindow {
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    const distHtml = path.join(__dirname, '../dist/index.html');
-    if (fs.existsSync(distHtml)) {
+    const distHtmlCandidates = [
+      path.join(__dirname, '../dist/index.html'),
+      path.join(__dirname, 'index.html'),
+      path.join(app.getAppPath ? app.getAppPath() : process.cwd(), 'dist/index.html'),
+      path.join(app.getAppPath ? app.getAppPath() : process.cwd(), 'index.html'),
+      path.join(process.cwd(), 'dist/index.html'),
+    ];
+    const distHtml = distHtmlCandidates.find(p => fs.existsSync(p));
+    if (distHtml) {
       mainWindow.loadFile(distHtml);
     } else {
-      mainWindow.loadURL('data:text/html;charset=utf-8,<!DOCTYPE html><html><head><title>Audio Codec Front-End</title></head><body style="background:%23181830;color:%23e0dfd5;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><h1>Audio Codec Front-End</h1></body></html>');
+      console.error('Could not find application HTML bundle in candidate paths:', distHtmlCandidates);
+      mainWindow.loadURL('data:text/html;charset=utf-8,<!DOCTYPE html><html><head><title>Audio Codec Front-End - Bundle Not Found</title></head><body style="background:%23181830;color:%23ff4d4d;font-family:monospace;padding:40px;"><h1>Bundle Error: dist/index.html not found</h1><p style="color:%23e0dfd5;">Please ensure the production build has been generated with <code>npm run build</code>.</p></body></html>');
     }
   }
 

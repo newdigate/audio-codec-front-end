@@ -5,6 +5,7 @@
   "author": "Antigravity",
   "main": "dist-electron/main.js",
   "scripts": {
+    "start": "electron .",
     "dev": "vite",
     "build": "tsc && vite build && electron-builder --dir",
     "build:native": "cmake-js compile",
@@ -36,5 +37,28 @@
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.5",
     "vitest": "^2.1.2"
+  },
+  "build": {
+    "appId": "com.antigravity.audiocodecfrontend",
+    "productName": "Audio Codec Front-End",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/Release/audio_native.node",
+        "to": "build/Release/audio_native.node"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dir"
+      ]
+    }
   }
 }
