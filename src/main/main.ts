@@ -76,6 +76,9 @@ export function registerIpcHandlers() {
   ipcMain.removeHandler('audio:start-batch');
   ipcMain.removeHandler('audio:control-batch');
   ipcMain.removeHandler('audio:load-analysis');
+  ipcMain.removeHandler('audio:get-decoder-info');
+  ipcMain.removeHandler('audio:invalidate-cache');
+  ipcMain.removeHandler('audio:reanalyze-file');
   ipcMain.removeHandler('audio:playback-play');
   ipcMain.removeHandler('audio:playback-pause');
   ipcMain.removeHandler('audio:playback-stop');
